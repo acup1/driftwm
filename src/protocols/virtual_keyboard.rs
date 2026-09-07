@@ -9,13 +9,12 @@
 //! — resolved against the virtual keyboard's *own* uploaded keymap and
 //! modifier state, which need not match the physical layout — and a bound
 //! combo executes instead of reaching the focused client (the paired release
-//! is swallowed too). Everything else follows smithay: the focused client
-//! receives the virtual keyboard's keymap before its keys.
+//! is swallowed too).
 //!
-//! smithay remembers which keymap the clients hold in a crate-private field
-//! and re-sends the seat's before the next physical key. The copy keeps its
-//! own record of the `wl_keyboard`s holding a virtual keymap, and the input
-//! path calls [`restore_seat_keymap`] before forwarding a physical key.
+//! smithay tracks which keymap each client holds in a crate-private field and
+//! re-sends the seat's before the next physical key, so the copy keeps its own
+//! record of the `wl_keyboard`s holding a virtual keymap and the input path
+//! calls [`restore_seat_keymap`] before forwarding a physical key.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -51,31 +50,27 @@ pub trait VirtualKeyboardBindingHandler {
     fn virtual_key_binding(&mut self, modifiers: &ModifiersState, sym: Keysym) -> bool;
 }
 
-/// The `zwp_virtual_keyboard_manager_v1` global.
 #[derive(Debug)]
 pub struct VirtualKeyboardManagerState {
     global: GlobalId,
 }
 
-/// Data associated with the manager global.
 pub struct VirtualKeyboardManagerGlobalData {
     filter: Box<dyn for<'c> Fn(&'c Client) -> bool + Send + Sync>,
 }
 
-/// User data of a `zwp_virtual_keyboard_manager_v1` resource.
 #[derive(Debug)]
 pub struct VirtualKeyboardManagerUserData;
 
-/// User data of a `zwp_virtual_keyboard_v1` resource. Its keymap and modifier
-/// state live on the compositor, keyed by the resource, so that the xkb state
-/// never has to cross threads.
+/// Holds only the seat: the keymap and modifier state live in
+/// [`VirtualKeyboardBindings`], keyed by the resource, so the xkb state never
+/// has to cross threads.
 #[derive(Debug)]
 pub struct VirtualKeyboardUserData<D: SeatHandler> {
     seat: Seat<D>,
 }
 
 impl VirtualKeyboardManagerState {
-    /// Create the manager global; `filter` decides which clients see it.
     pub fn new<D, F>(display: &DisplayHandle, filter: F) -> Self
     where
         D: GlobalDispatch<ZwpVirtualKeyboardManagerV1, VirtualKeyboardManagerGlobalData>,
@@ -97,21 +92,18 @@ impl VirtualKeyboardManagerState {
     }
 }
 
-/// Per-virtual-keyboard state mirrored from the client's `keymap` and
-/// `modifiers` requests, keyed by the `zwp_virtual_keyboard_v1` resource so
-/// multiple virtual keyboards don't mix layouts, plus the record of which
-/// `wl_keyboard`s currently hold a keymap other than the seat's.
+/// Per-virtual-keyboard xkb state mirrored from the client's `keymap` and
+/// `modifiers` requests, keyed by resource so multiple virtual keyboards don't
+/// mix layouts, plus which `wl_keyboard`s currently hold a keymap other than
+/// the seat's.
 ///
-/// Keymaps are told apart by text, as smithay does with a hash of it: an
-/// on-screen keyboard that uploads the seat's own layout must cost the client
-/// nothing — no keymap event, no recompile, and no modifiers event resetting
-/// whatever the physical keyboard holds.
+/// Keymaps are compared by text so an on-screen keyboard that uploads the
+/// seat's own layout costs the client nothing: no keymap event, no recompile,
+/// no modifiers event resetting what the physical keyboard holds.
 #[derive(Default)]
 pub struct VirtualKeyboardBindings {
     keyboards: HashMap<ObjectId, VirtualKeyboard>,
     foreign_keymaps: Vec<(Weak<WlKeyboard>, Rc<str>)>,
-    /// The seat's keymap, copied out on first use and dropped when the seat's
-    /// keymap may have changed.
     seat_keymap: Option<SeatKeymap>,
 }
 
@@ -154,11 +146,10 @@ impl VirtualKeyboardBindings {
             .count()
     }
 
-    /// Drop the copy of the seat's keymap. Call after the seat's keymap may
-    /// have changed. The records stay: smithay broadcasts a changed keymap to
-    /// every `wl_keyboard`, but stays silent when the new one compiles to the
-    /// same text, and either way the next physical key sends the seat's to
-    /// whoever still differs.
+    /// Call after the seat's keymap may have changed. The `foreign_keymaps`
+    /// records stay: smithay broadcasts a changed keymap to every
+    /// `wl_keyboard` but stays silent when it compiles to the same text, and
+    /// either way the next physical key restores whoever still differs.
     pub fn seat_keymap_changed(&mut self) {
         self.seat_keymap = None;
     }
@@ -172,7 +163,6 @@ impl VirtualKeyboardBindings {
             tracing::warn!("virtual keyboard: keymap size {size} exceeds limit, ignoring");
             return;
         }
-        // Dup the fd: the request owns the original.
         let Ok(fd) = fd.try_clone() else {
             return;
         };
@@ -277,7 +267,6 @@ fn handle_key<D: VirtualKeyboardBindingHandler>(
     true
 }
 
-/// The focused surface's client, which is where virtual keys go.
 fn focused_client<D>(keyboard: &KeyboardHandle<D>) -> Option<(D::KeyboardFocus, Client)>
 where
     D: SeatHandler + 'static,
@@ -288,8 +277,6 @@ where
     Some((focus, client))
 }
 
-/// The seat's keymap as text plus a sealed file to send it with, copied out
-/// once and reused until the seat's keymap may have changed.
 fn seat_keymap<D>(state: &mut D, keyboard: &KeyboardHandle<D>) -> Rc<str>
 where
     D: SeatHandler + VirtualKeyboardBindingHandler + 'static,
@@ -316,8 +303,8 @@ where
 }
 
 /// Send the virtual keyboard's keymap to the focused client's `wl_keyboard`s
-/// that don't hold that text yet, followed by its modifiers, as a keymap
-/// change must be. Returns whether any keymap went out.
+/// that don't hold it yet, then its modifiers, which a keymap change must
+/// carry. Returns whether any keymap went out.
 fn send_keymap<D>(
     state: &mut D,
     seat: &Seat<D>,

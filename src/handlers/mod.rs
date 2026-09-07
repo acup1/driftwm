@@ -1115,9 +1115,8 @@ impl SessionLockHandler for DriftWm {
             // protocol's answer to a lock already held.
             //
             // The refused client keeps its `ext_session_lock_v1`, but smithay
-            // answers `unlock_and_destroy` on any lock instance other than the
-            // one that locked with `invalid_unlock` and never reaches `unlock`,
-            // so it cannot unlock the session with it either.
+            // answers `unlock_and_destroy` from any lock other than the one
+            // that locked with `invalid_unlock`, so it cannot unlock either.
             Some(lock) if lock.is_alive() => {
                 tracing::info!("Refusing session lock: the session is already locked");
                 return;
@@ -1385,11 +1384,10 @@ impl SessionLockHandler for DriftWm {
             }
         });
 
-        // Only the lock that holds the session may put a surface on it. smithay
-        // stops calling `new_surface` for a lock it has finished, which already
-        // covers a refused client; matching the lock instance rather than its
-        // client also covers one client holding two lock objects, and keeps
-        // the invariant next to the one insertion into `lock_surfaces`.
+        // smithay already stops calling `new_surface` for a lock it has
+        // finished; matching the lock instance rather than its client also
+        // covers one client holding two lock objects, and keeps the invariant
+        // next to the one insertion into `lock_surfaces`.
         if self.session_lock.incumbent() != Some(surface.ext_session_lock()) {
             tracing::warn!("Ignoring lock surface from a client that does not hold the lock");
             return;

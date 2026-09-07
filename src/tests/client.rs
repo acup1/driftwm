@@ -136,8 +136,7 @@ pub struct State {
     /// bare frame with no axis inside it, so this stays empty for one.
     pub pointer_axes: Vec<f64>,
     /// Every `wl_keyboard` event this client's keyboard has received, oldest
-    /// first — shared by the physical and virtual-keyboard paths, so a
-    /// scenario can tell exactly which one delivered what.
+    /// first.
     pub keyboard_events: Vec<KeyboardEvent>,
 
     /// The token string from the most recent `xdg_activation_token_v1.done`.
@@ -298,9 +297,6 @@ pub enum TouchEvent {
     Cancel,
 }
 
-/// A `wl_keyboard` event this client's keyboard has received, kept generic so
-/// any scenario driving either the physical or the virtual-keyboard path can
-/// use it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyboardEvent {
     /// The keymap text read out of the event's fd.
@@ -759,16 +755,12 @@ impl Client {
         self.state.last_lock_surface()
     }
 
-    /// Every `wl_keyboard` event this client's keyboard has received so far,
-    /// oldest first. Does not clear the log — see [`Self::drain_keyboard_events`]
-    /// for that.
     pub fn keyboard_events(&self) -> &[KeyboardEvent] {
         &self.state.keyboard_events
     }
 
-    /// Take the recorded `wl_keyboard` events, leaving the log empty — for
-    /// clearing incidental noise (the initial bind, an unrelated focus change)
-    /// before driving the interaction a scenario actually cares about.
+    /// Take the log, so bind-time and focus-change noise can be dropped before
+    /// the interaction a scenario cares about.
     pub fn drain_keyboard_events(&mut self) -> Vec<KeyboardEvent> {
         std::mem::take(&mut self.state.keyboard_events)
     }
@@ -783,10 +775,9 @@ impl Client {
         keyboard
     }
 
-    /// Upload `text` as `keyboard`'s XKB keymap (`zwp_virtual_keyboard_v1.keymap`)
-    /// through a temp file, the way a real on-screen keyboard hands over its
-    /// compiled keymap — flushed immediately, since the fd must still be open
-    /// when the message is written to the wire.
+    /// Upload `text` as `keyboard`'s XKB keymap through a temp file, flushed
+    /// before the file drops so the fd is still open when the message is
+    /// written to the wire.
     pub fn virtual_keyboard_keymap(&mut self, keyboard: &ZwpVirtualKeyboardV1, text: &str) {
         let file = shm_file(text.as_bytes());
         keyboard.keymap(
@@ -797,8 +788,7 @@ impl Client {
         self.connection.flush().unwrap();
     }
 
-    /// `zwp_virtual_keyboard_v1.key`. `pressed` is the physical key state: `true`
-    /// for a press, `false` for a release.
+    /// `zwp_virtual_keyboard_v1.key`.
     pub fn virtual_keyboard_key(
         &mut self,
         keyboard: &ZwpVirtualKeyboardV1,
@@ -810,8 +800,7 @@ impl Client {
         self.connection.flush().unwrap();
     }
 
-    /// `zwp_virtual_keyboard_v1.modifiers`, with only the depressed mask set —
-    /// no scenario here needs latched, locked, or a non-zero group.
+    /// `zwp_virtual_keyboard_v1.modifiers` with only the depressed mask set.
     pub fn virtual_keyboard_modifiers(
         &mut self,
         keyboard: &ZwpVirtualKeyboardV1,
@@ -2176,8 +2165,7 @@ impl Dispatch<WlKeyboard, ()> for State {
                 let file = std::fs::File::from(fd);
                 let mut buf = vec![0u8; size as usize];
                 file.read_exact_at(&mut buf, 0).expect("read keymap fd");
-                // Matches `track_keymap`'s own NUL handling: older clients get a
-                // NUL-terminated string, newer ones need not bother.
+                // The keymap may or may not be NUL-terminated, as in `track_keymap`.
                 let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
                 let text = String::from_utf8(buf[..len].to_vec()).expect("keymap must be UTF-8");
                 state.keyboard_events.push(KeyboardEvent::Keymap(text));

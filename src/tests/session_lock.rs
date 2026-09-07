@@ -409,19 +409,13 @@ fn second_lock_is_refused_while_the_first_client_is_alive() {
     );
 }
 
-/// This pins a smithay behaviour from this bump's rev, not a driftwm mutation:
-/// before it, `ext_session_lock_v1.unlock_and_destroy` only checked a bare
-/// "is the session locked at all" flag and unconditionally called
-/// `state.unlock()` regardless, so a refused client's own unlock request ended
-/// the incumbent's session out from under it. Now the check is against the
-/// specific lock object holding `LockStatus::Locked`, and only that one may
-/// unlock.
+/// Pins smithay, not driftwm: `unlock_and_destroy` from any lock object other
+/// than the one holding `LockStatus::Locked` is `invalid_unlock`, never an
+/// unlock of the incumbent's session.
 ///
-/// Only the error code is checked, not the object interface or message:
-/// `unlock_and_destroy` is a wire destructor, so wayland-client has already
-/// dropped its local record of the object by the time the server's error
-/// event naming it comes back, and decodes it as the empty/zero placeholder
-/// rather than `ext_session_lock_v1`.
+/// Only the error code is checked: `unlock_and_destroy` is a wire destructor,
+/// so wayland-client has dropped its record of the object by the time the
+/// error naming it comes back, and decodes the interface as a placeholder.
 #[test]
 fn a_refused_clients_unlock_and_destroy_cannot_unlock_the_session() {
     let mut f = Fixture::new();

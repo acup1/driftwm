@@ -1,11 +1,8 @@
-//! `zwp_virtual_keyboard_v1` (`src/protocols/virtual_keyboard.rs`, vendored
-//! from smithay with one addition): a virtual key is resolved against the
-//! virtual keyboard's *own* uploaded keymap and modifier state, and a bound
-//! combo runs the compositor action instead of reaching the focused client
-//! (press and its paired release both swallowed). Everything unbound follows
-//! smithay: the focused client gets the virtual keyboard's keymap before its
-//! keys, and a physical key afterwards must find the seat's own keymap
-//! restored first.
+//! `zwp_virtual_keyboard_v1` (`src/protocols/virtual_keyboard.rs`): a virtual
+//! key resolves against the virtual keyboard's *own* keymap and modifiers, a
+//! bound combo runs the compositor action with press and release swallowed,
+//! and anything else reaches the focused client under the virtual keyboard's
+//! keymap, which a physical key afterwards must find restored to the seat's.
 
 use smithay::input::keyboard::xkb;
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_v1::{
@@ -16,17 +13,10 @@ use super::client::{ClientId, KeyboardEvent};
 use super::input_backend::{key_press, key_release};
 use super::{Fixture, config, keyboard_focus, map_window, server_surface, window_by_app_id};
 
-/// Evdev keycode the virtual keyboard presses in most scenarios here.
 const KEY_A: u32 = 30;
-/// Evdev keycode for `=`, whose "equal" keysym backs the bound combo in
-/// [`a_virtual_key_matching_a_compositor_binding_runs_the_action_and_never_reaches_the_client`].
 const KEY_EQUAL: u32 = 13;
-/// A harmless physical keycode, distinct from `KEY_A` so a test mixing both
-/// paths never confuses one for the other.
 const KEY_B: u32 = 48;
 
-/// Compile an XKB keymap for `layout` under the default ("evdev") rules, the
-/// way a real on-screen keyboard would build the one it uploads.
 fn compile_keymap(layout: &str) -> xkb::Keymap {
     let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
     xkb::Keymap::new_from_names(
@@ -41,10 +31,9 @@ fn compile_keymap(layout: &str) -> xkb::Keymap {
     .expect("compile a keymap")
 }
 
-/// Map a focused window for `a`, then have `b`'s virtual keyboard upload a
-/// `de` keymap — deliberately not the fixture's default `us` seat layout, so
-/// a client actually holding it is observable — and press + release `KEY_A`.
-/// Returns the virtual keyboard and the keymap text it uploaded.
+/// `b`'s virtual keyboard presses and releases `KEY_A` into `a`'s focused
+/// window under a `de` keymap — not the seat's `us`, so a client holding it
+/// is observable. Returns the keyboard and the keymap text.
 fn press_a_through_virtual_keyboard(
     f: &mut Fixture,
     a: ClientId,
@@ -83,9 +72,8 @@ fn a_virtual_key_reaches_the_focused_window_with_the_virtual_keyboards_keymap_fi
     assert_eq!(
         f.client(a).drain_keyboard_events(),
         vec![
-            // A keymap change is always followed by a modifiers event to
-            // resync the client's state — here the virtual keyboard's own
-            // default (nothing depressed).
+            // A keymap change carries a modifiers resync — here the virtual
+            // keyboard's default, nothing depressed.
             KeyboardEvent::Keymap(text),
             KeyboardEvent::Modifiers { mods_depressed: 0 },
             KeyboardEvent::Key {
@@ -108,9 +96,8 @@ fn an_on_screen_keyboard_uploading_the_seats_own_layout_costs_the_client_nothing
     let mut f = Fixture::new();
     f.add_output(1, (1920, 1080));
     let a = f.add_client();
-    // The keyboard binds off the back of the seat global, which itself only
-    // shows up after the client's first roundtrip; a second one is needed to
-    // actually see the keymap that bind provokes.
+    // The keyboard binds off the seat global, which only shows up after the
+    // first roundtrip; a second one sees the keymap that bind provokes.
     f.double_roundtrip(a);
 
     let initial = f.client(a).drain_keyboard_events();
@@ -261,11 +248,10 @@ fn a_bound_combo_still_fires_after_a_keymap_reupload_that_follows_modifiers() {
     f.client(b).virtual_keyboard_modifiers(&vk, mask);
     f.roundtrip(b);
 
-    // `gb`, not `de`: both are a genuinely different keymap text from `us`,
-    // but `de` turns the physical `=` key into a dead-accent key at the base
-    // level, which would fail the binding lookup on the resolved sym alone —
-    // this scenario means to fail only if the *modifiers* are lost across the
-    // re-upload, so the sym must keep resolving to `equal`.
+    // `gb`, not `de`: both differ from `us` as text, but `de` makes the
+    // physical `=` key a dead accent at the base level, which would fail the
+    // binding on the sym alone — this scenario must fail only if the
+    // *modifiers* are lost across the re-upload.
     let k2 = compile_keymap("gb");
     f.client(b)
         .virtual_keyboard_keymap(&vk, &k2.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1));
@@ -361,8 +347,7 @@ fn a_physical_key_after_virtual_typing_restores_the_seat_keymap_first() {
     let b = f.add_client();
 
     let (_vk, virtual_text) = press_a_through_virtual_keyboard(&mut f, a, b);
-    // The virtual delivery itself is pinned by the scenario above; drop it so
-    // only what the physical key produces is left to inspect.
+    // Leave only what the physical key produces.
     f.client(a).drain_keyboard_events();
 
     key_press(&mut f, KEY_B);
@@ -400,10 +385,6 @@ fn a_physical_key_after_virtual_typing_restores_the_seat_keymap_first() {
     );
 }
 
-/// This test kills client `b` after catching the error — a protocol error on a
-/// live object leaves its `WaylandSource` errored but still registered, so any
-/// later `Fixture::roundtrip`/`dispatch`, even for a different client, would
-/// panic on it (see `session_lock.rs`'s `expect_lock_surface_error`).
 #[test]
 fn key_before_keymap_is_a_protocol_error() {
     let mut f = Fixture::new();
@@ -467,11 +448,6 @@ fn a_modifiers_request_reaches_the_focused_window() {
     );
 }
 
-/// Destroying a virtual keyboard must free its compositor-side bookkeeping —
-/// checked here directly, and again by the fixture's own teardown baseline
-/// (`debug_counters`' `virtual_kb_bindings` entry is
-/// `VirtualKeyboardBindings::keyboard_count`), which this scenario does not
-/// opt out of.
 #[test]
 fn destroying_a_virtual_keyboard_frees_its_bookkeeping() {
     let mut f = Fixture::new();

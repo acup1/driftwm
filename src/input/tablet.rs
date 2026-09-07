@@ -47,7 +47,6 @@ impl<I: InputBackend> PointerButtonEvent<I> for TabletTipButtonEvent<I> {
     }
 }
 
-/// The axes a tablet event reports as changed, in the frame smithay forwards.
 fn changed_axes<I: InputBackend>(event: &impl TabletToolEvent<I>) -> tool::AxisFrame {
     tool::AxisFrame {
         pressure: event.pressure_has_changed().then(|| event.pressure()),
