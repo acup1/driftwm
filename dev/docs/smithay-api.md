@@ -1,7 +1,15 @@
-# Smithay 0.7.0 API Reference
+# Smithay API Reference
 
-Quick reference for key smithay APIs used in driftwm. See the source at
-`~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smithay-0.7.0/`.
+Quick reference for key smithay APIs used in driftwm, at the rev pinned in
+`Cargo.toml` — source in `~/.cargo/git/checkouts/smithay-*/<rev>/`.
+
+## Dispatch2 (rev `4cf0b620`)
+
+Every `delegate_<protocol>!` macro is gone. Protocol dispatch is implemented on the **user-data type** through `smithay::wayland::{Dispatch2, GlobalDispatch2}` (methods take `&self` plus `state: &mut State`), and one `smithay::delegate_dispatch2!(DriftWm);` (`src/handlers/mod.rs`) blanket-implements wayland-server's `Dispatch<I, U>` / `GlobalDispatch<I, U>` for every `U: Dispatch2<I, DriftWm>` / `GlobalDispatch2<I, DriftWm>`. `smithay::wayland::GlobalData` is the unit user data smithay uses for manager objects.
+
+- driftwm's own protocols under `src/protocols/` keep their hand-written `impl<D> Dispatch<I, U, D> for <State>` plus `wayland_server::delegate_dispatch!` macros. They coexist with the blanket impl because rustc can rely on the negative fact `U: !Dispatch2<I, DriftWm>` — `DriftWm` appears in the trait ref, so the bin crate is the only one that could ever add that impl (`(): Dispatch2<I, DriftWm>` is *knowable*, unlike the classic `impl<T: Display>` overlap).
+- What cannot coexist is intercepting a **smithay** user-data type: `impl Dispatch<ZwpVirtualKeyboardV1, VirtualKeyboardUserData<DriftWm>> for DriftWm` overlaps the blanket because smithay implements `Dispatch2` for that data for every `D`. That is why the virtual-keyboard protocol is vendored (`src/protocols/virtual_keyboard.rs`) with driftwm-owned data types implementing `Dispatch2`.
+- A `Dispatch2::request` on a `#[non_exhaustive]` request enum needs a catch-all arm; smithay writes `_ => unreachable!()`, driftwm's vendored copy `_ => {}`.
 
 ## PointerGrab System
 
@@ -150,30 +158,43 @@ Source: `src/wayland/cursor_shape.rs`
 ```rust
 // Init: requires TabletSeatHandler impl (even empty)
 let state = CursorShapeManagerState::new::<DriftWm>(&display_handle);
-delegate_cursor_shape!(DriftWm);
+// Dispatch: covered by `smithay::delegate_dispatch2!(DriftWm)`.
 // Also need: impl TabletSeatHandler for DriftWm {}
 ```
 
-### TabletSeat / TabletSeatHandler (`tablet-v2` protocol)
+### Tablet input (`smithay::input::tablet`, rev `4cf0b620`)
 
-`wp_tablet_manager_v2` is used to expose high-definition graphics tablet pen input (pressure, tilt, rotation) to drawing tools like Krita.
+Tablet handling was rebuilt to the pointer/touch model: the seat logic lives in `smithay::input::tablet` and the `tablet-v2` wire side in `smithay::wayland::tablet_manager`. driftwm's consumer is `src/input/tablet.rs`.
 
 ```rust
-// Init:
-let tablet_state = TabletManagerState::new::<DriftWm>(&dh);
-delegate_tablet_manager!(DriftWm);
+use smithay::input::tablet::{TabletDescriptor, TabletSeatTrait, tool};
+use smithay::wayland::tablet_manager::TabletManagerState;
 
-// Impl:
 impl TabletSeatHandler for DriftWm {
-    fn tablet_tool_image(
-        &mut self,
-        _tool: &smithay::backend::input::TabletToolDescriptor,
-        image: CursorImageStatus,
-    ) {
-        self.cursor.cursor_status = image;
-    }
+    type ToolFocus = FocusTarget;            // must impl tool::TabletToolTarget + PartialEq + Clone
+    fn tablet_tool_image(&mut self, tool: &TabletToolDescriptor, image: CursorImageStatus) { .. }
+    // fn down_grab(..) -> impl TabletToolGrab  — default DownGrab, mirrors ClickGrab
 }
+
+let seat = self.seat.tablet_seat();          // TabletSeatTrait
+seat.add_wp_tablet(&dh, &TabletDescriptor::from(device));   // device add
+let tool = seat.get_tool(&desc).unwrap_or_else(|| seat.add_wp_tool(self, &dh, &desc));
+tool.proximity_in(self, under, tablet, &tool::ProximityInEvent { location, axis: Some(frame), serial, time });
+tool.axis(self, tool::AxisFrame { pressure: Some(..), ..Default::default() });
+tool.motion(self, under, &tool::MotionEvent { location, serial, time });
+tool.down(self, &tool::DownEvent { serial, time });    // up / button likewise
+tool.frame(self, time);                                  // nothing is framed implicitly any more
+tool.proximity_out(self, &tool::ProximityOutEvent { serial, time });
 ```
+
+- `under` is `Option<(ToolFocus, Point<f64, Logical>)>` and may be `None`; every other call before `proximity_in` is dropped with a warning ("the tool hasn't entered tablet proximity"), so pass `None` rather than skipping `proximity_in`.
+- `AxisFrame` has public `Option` fields (`pressure`, `distance`, `tilt`, `rotation`, `slider`, `wheel`) and builder methods; `changed_axes` in `src/input/tablet.rs` fills it from a backend event's `*_has_changed` flags.
+- `FocusTarget` forwards `TabletToolTarget` to `WlSurface`'s impl (`src/state/focus.rs`); `TabletSeat::with_tools` holds the seat lock across its callback and deadlocks if the callback uses a tool handle (master `7ddcd173` replaces it with `get_tools`).
+
+### Touch (`FrameMarker`, rev `4cf0b620`)
+
+`TouchTarget` and `TouchGrab` methods lost their `seq: Serial` parameter. `frame` and `cancel` carry a `FrameMarker` instead, and a target implements `last_frame(&self, seat, data) -> Option<FrameMarker>` so `TouchHandle` can send one `frame`/`cancel` per client rather than per slot (`WlSurface` answers from `client_compositor_state(client).last_touch_frame()`; `FocusTarget` forwards). `TouchInnerHandle::set_grab(handler, data, serial, grab)` takes an ordinary serial — smithay's `DefaultGrab` passes the down event's; driftwm's gesture grab mints one with `SERIAL_COUNTER`.
+
 
 ### MemoryRenderBuffer
 Source: `src/backend/renderer/element/memory.rs`
@@ -419,7 +440,7 @@ driftwm's synthetic backend for tests lives in `src/tests/input_backend.rs`.
 
 ### Compositor / Protocol Essentials
 
-- **Must call `on_commit_buffer_handler::<DriftWm>(surface)`** in `CompositorHandler::commit()` — NOT done by `delegate_compositor!`. Without it, `RendererSurfaceState` is never populated, `surface_view` stays None, `bbox_from_surface_tree()` returns 0x0, windows invisible.
+- **Must call `on_commit_buffer_handler::<DriftWm>(surface)`** in `CompositorHandler::commit()` — NOT done by the dispatch delegation. Without it, `RendererSurfaceState` is never populated, `surface_view` stays None, `bbox_from_surface_tree()` returns 0x0, windows invisible.
 - **Must call `output.create_global::<DriftWm>(&display_handle)`** — `space.map_output()` is internal only; clients need a `wl_output` global to see monitors.
 - **`ToplevelSurface::send_configure()`** must be called in `new_toplevel` — clients won't render until they receive an initial configure.
 - **`PopupSurface::send_configure()`** must be called in `new_popup` — same as toplevels. Also set geometry from positioner: `surface.with_pending_state(|s| s.geometry = positioner.get_geometry())`.
@@ -438,11 +459,14 @@ driftwm's synthetic backend for tests lives in `src/tests/input_backend.rs`.
 - **DMA-BUF v3 (create_global)** sufficient for winit backend — advertises formats, no device info. v4 (create_global_with_default_feedback) adds render device hints for multi-GPU. `ImportDma::dmabuf_formats()` on GlesRenderer gets formats from EGL.
 - Benign `EGL BAD_SURFACE` error on first frame is from `buffer_age()` before the surface is ready; `unwrap_or(0)` handles it.
 
+- **This smithay rev needs winit `0.31.0-beta.2`**; cargo's `^0.31.0-beta.2` resolves to beta.3, against which smithay's winit backend does not compile (`WindowEvent::DragMoved` gone, new `Axis` arms). `Cargo.lock` pins beta.2; smithay master `73f2570c` moves to beta.3.
 ### Input / Keycodes
 
 - **Don't add +8 to keycodes** from smithay input events — they're already XKB keycodes. Adding 8 double-offsets every key.
 - **Mouse wheel vs trackpad scroll** — `PointerAxisEvent::amount()` returns `None` for discrete mouse wheels. Use `amount_v120()` (120 = one notch) as fallback: `event.amount(axis).or_else(|| event.amount_v120(axis).map(|v| v * 15.0 / 120.0))`.
 
+- **Swapping a client's keymap without smithay knowing.** Public surface: `KeyboardHandle::client_keyboards(&Client) -> impl Iterator<Item = WlKeyboard>`, `KeymapFile::new(&xkb::Keymap)` + `KeymapFile::send(&WlKeyboard)`, `KeyboardTarget::modifiers(&self, seat, data, mods, serial)`, and `with_xkb_state(data, |ctx| ...)` whose `ctx.xkb().lock()` yields an `Xkb` with `unsafe fn keymap()/state()/context()` (the ref-count must not outlive the `Xkb`). Crate-private: `send_keymap` and `active_keymap`, smithay's own dedup of keymap events — the seat re-sends its keymap in `KeyboardInnerHandle::input` only when `active_keymap` differs, so a keymap sent behind its back stays on the client until the compositor sends the seat's back itself (`protocols::virtual_keyboard::restore_seat_keymap`). `KeymapFileId` is a SHA-256 of the keymap text, so two uploads of the same text dedupe.
+- **`KeyboardHandle::inject_text_keysyms(data, &[Keysym])`** builds a throwaway keymap, swaps the focused client onto it, taps the keys and swaps back — the libei text path; press/release pairs only, no held modifiers.
 ### Data Types / Borrow Patterns
 
 - **DataMap::get_or_insert returns `&T` (immutable)** — wrap state in `RefCell` for mutation. Use `.borrow()` / `.replace()`.
@@ -463,6 +487,9 @@ driftwm's synthetic backend for tests lives in `src/tests/input_backend.rs`.
 - **`pointer_over_layer` must be reset on layer destroy and fullscreen enter** — stale flag breaks all input until next motion event.
 - **`TouchHandle::is_grabbed()` is true after any `down()`, and `grab_start_data()` is no better** — smithay's touch `DefaultGrab::down` (`input/touch/grab.rs`) installs its own `TouchDownGrab` unconditionally, so `is_grabbed()` can't distinguish "the compositor set a grab" from "a finger is down". `grab_start_data()` is the same tautology under another name: `set_grab` stores *every* grab as `GrabStatus::Active` (`input/touch/mod.rs`) and `grab_start_data()` returns `Some` for any `Active`, so it is `Some` after any `down()` too — it reports the start data of whichever grab is installed, not who installed it. Nothing on `TouchHandle` answers the question; assert on the compositor's own grab bookkeeping instead.
 
+- **`PointerConstraintRef::deactivate(self, state, surface, pointer)` (rev `4cf0b620`) calls `PointerConstraintsHandler::remove_constraint(surface, pointer, Some(&constraint))` from inside the constraint closure** — the surface's user-data lock is still held. driftwm leaves `remove_constraint` at its empty default; anything it did there that touched the surface would be the re-entrant surface-lock freeze again. `new_constraint` and `cursor_position_hint` are default methods now. Smithay master `e3d461a0` moves the callback out of the lock and changes the argument to a `ConstraintRemove` enum.
+- **`ClickGrab` follows a moving start focus** (`51dd62ee`, `c3a96c78`): while the pointer stays over the start surface, `motion` re-derives coordinates from the live focus; once it leaves, the last known location of that surface is used. `SeatHandler::click_grab()` / `touch_down_grab()` let a compositor substitute the implicit grabs.
+- **A `wl_pointer` bound while the pointer is over the client's surface gets `enter` immediately** (`b5b5573c`); a late `wl_touch` gets `down`, a late tablet tool `proximity_in`/`down`. Fixture enter counts shift for objects bound after the cursor arrived.
 ### Trait Impls / Method Clashes
 
 - **WlSurface protocol methods clash with trait methods** — `WlSurface::enter()` is the `wl_surface.enter(output)` protocol method. When delegating `KeyboardTarget::enter` etc. from a newtype, use fully-qualified syntax: `KT::<D>::enter(&self.0, ...)`.
@@ -501,6 +528,8 @@ driftwm's synthetic backend for tests lives in `src/tests/input_backend.rs`.
 - **smithay sends its own initial configure after `SessionLockHandler::new_surface` returns** (`lock.rs`), but only if the handler left `server_pending` set to a state the role has not already been told. `get_pending_state` starts with `server_pending.take()?` and then drops it anyway when it equals `current_server_state()` — the last pending configure, else the last ack. So a handler that returns early without calling `with_pending_state` leaves the role live and permanently unconfigured, and so does one that re-requests the state a surviving ack already carries.
 - **A future `DrmSyncobjState` would reintroduce the kill on a different object**, exactly as it would for layer shell: its hook registers at `wp_linux_drm_syncobj_manager_v1.get_surface`, i.e. after driftwm's `new_surface` hooks, so it would find the stripped buffer and post `NoBuffer` on a still-live `wp_linux_drm_syncobj_surface_v1`. No `drm_syncobj` today.
 
+- **Lock ownership lives on `SessionLockManagerState` (rev `4cf0b620`): `LockStatus { Unlocked, Locked(ExtSessionLockV1), Defunct }`.** `unlock_and_destroy` on any instance other than the one that locked posts `invalid_unlock` and never calls `SessionLockHandler::unlock`; `Defunct` is set when the locking client disconnects without unlocking (no `unlock` call either — re-locking is compositor policy). `LockSurface::ext_session_lock()` names the instance a surface was created on.
+- **Dropping a `SessionLocker` sets a per-instance `done` flag as it sends `finished`.** From then on `get_lock_surface` on that instance still takes the role, registers the pre-commit hook and initialises `LockSurfaceAttributes`, but calls neither `new_surface` nor `send_configure`, and `ack_configure` on such a role never reaches the handler. driftwm therefore never sees a refused client's roles; on a `wl_surface` driftwm configured earlier, the neutraliser reads that fresh-but-unconfigured role as an orphan (see `a_declined_lock_role_on_a_surface_configured_before_stays_dark`).
 ### Buffers / `wl_buffer.release`
 
 - **Release-on-*replace* happens in exactly one place, `SurfaceAttributes::merge_into`** (`compositor/handlers.rs`): replacing a pending buffer during the cache merge releases the displaced one unless it's the same `WlBuffer` (`if Some(&buffer) != new_buffer { buffer.release(); }`). `Cacheable::commit` is `buffer: self.buffer.take()` — a plain move. So overwriting `pending().buffer` from a **pre-commit hook** sends no release at all; do it explicitly or a client recycling a small shm pool stalls forever.
