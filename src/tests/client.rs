@@ -687,6 +687,16 @@ impl Client {
         self.state.confine_pointer_with_region(surface, rects)
     }
 
+    /// Replace an active confine's region (`zwp_confined_pointer_v1.set_region`).
+    /// Takes effect on the surface's next commit, like the initial region does.
+    pub fn set_confine_region(
+        &mut self,
+        confine: &ZwpConfinedPointerV1,
+        rects: &[(i32, i32, i32, i32)],
+    ) {
+        self.state.set_confine_region(confine, rects);
+    }
+
     /// Send `ext_session_lock_manager_v1.lock`, entering
     /// `SessionLockHandler::lock` on the compositor. The created lock object
     /// is tracked as this client's most recent [`Lock`]; its `locked`/
@@ -1144,6 +1154,16 @@ impl State {
         );
         region.destroy();
         confine
+    }
+
+    pub fn set_confine_region(
+        &mut self,
+        confine: &ZwpConfinedPointerV1,
+        rects: &[(i32, i32, i32, i32)],
+    ) {
+        let region = self.region_from(rects);
+        confine.set_region(Some(&region));
+        region.destroy();
     }
 
     pub fn lock_session(&mut self) {
