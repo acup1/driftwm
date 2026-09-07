@@ -374,14 +374,11 @@ fn a_panel_over_a_locked_cursor_takes_the_pointer() {
     let (surface, _) = shadowed_window(&mut f, game_id);
     let _lock = lock_pointer_over(&mut f, game_id, &surface);
 
-    // Output-sized, so it covers the cursor wherever the game was placed.
-    // Mapping it doesn't re-seat pointer focus by itself.
-    let _panel = map_top_layer(&mut f, panel_id, "panel", (1920, 1080), None);
     f.client(panel_id).state.pointer_positions.clear();
-
-    // The re-seat every scene change ends with — a layer teardown, a window
-    // closing, a pin toggle, a fullscreen exit.
-    f.state().refresh_pointer_focus();
+    // Output-sized, so it covers the cursor wherever the game was placed. The
+    // pull during the map's own roundtrip is the re-seat every scene change
+    // ends with.
+    let _panel = map_top_layer(&mut f, panel_id, "panel", (1920, 1080), None);
     f.double_roundtrip(game_id);
     f.double_roundtrip(panel_id);
 

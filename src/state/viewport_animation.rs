@@ -5,7 +5,7 @@
 //! Carries a second, unrelated subject that belongs in `src/input/`:
 //! `apply_key_repeat`, the pointer group (`focus_under`,
 //! `pointer_constraint_active`, `pointer_constraint_locked`, `locked_to`,
-//! `cursor_over_surface`, `warp_pointer`, `flush_pointer_resync`), and
+//! `cursor_over_surface`, `warp_pointer`), and
 //! `check_exec_cursor_timeout`. They are here because they were already in
 //! `animation.rs` when its window half was split off, and are pending
 //! relocation — the module name does not describe them.
@@ -161,7 +161,7 @@ impl DriftWm {
 
     /// Whether the cursor currently sits over `surface`. Pointer focus alone
     /// can't answer that: [`Self::warp_pointer`] deactivates a constraint
-    /// without re-seating focus (that waits for the next frame), so between the
+    /// without re-seating focus (the pull at the end of the iteration does that), so between the
     /// two the focused surface is one the cursor has already left.
     pub(crate) fn cursor_over_surface(&self, surface: &WlSurface) -> bool {
         let pointer = self.seat.get_pointer().unwrap();
@@ -176,8 +176,9 @@ impl DriftWm {
     /// A pointer grab (window move/resize, edge-pan) drives its repositioning
     /// off this motion and needs every event, so send synchronously. Otherwise
     /// the cursor is free over a sliding canvas: update the internal location
-    /// now (hit-testing stays correct) but defer the client-facing motion to
-    /// [`Self::flush_pointer_resync`], coalescing to one motion per frame.
+    /// now (hit-testing stays correct) and leave the client-facing motion to the
+    /// pull, once per iteration and once per frame right after the animation
+    /// tick, which coalesces a pan's stream to one motion per frame.
     pub(crate) fn warp_pointer(&mut self, new_pos: Point<f64, Logical>) {
         // `new_pos` is canvas-space, but a locked session keeps screen coords in
         // `current_location` (the invariant `SessionLockHandler::lock` sets up),
@@ -217,46 +218,6 @@ impl DriftWm {
         }
 
         pointer.set_location(new_pos);
-        self.pending_pointer_resync = true;
-    }
-
-    /// Flush a pointer resync deferred by [`Self::warp_pointer`]. Sends a single
-    /// `wl_pointer.motion` to the surface under the (already-updated) cursor,
-    /// refreshing focus/hover and enter/leave. Called once per rendered frame.
-    pub(crate) fn flush_pointer_resync(&mut self) {
-        if !std::mem::take(&mut self.pending_pointer_resync) {
-            return;
-        }
-        // `focus_under` is lock-unaware, so a flush while locked would re-target
-        // pointer focus at the app behind the lock surface. Swallowed after the
-        // take rather than deferred past it: a flag left standing keeps udev's
-        // render loop out of its idle path for the whole lock, and `unlock`
-        // re-seats pointer focus anyway.
-        if self.session_lock.is_locked() {
-            return;
-        }
-        // A constraint may have activated since the deferred warp.
-        if self.pointer_constraint_active() {
-            return;
-        }
-        let pointer = self.seat.get_pointer().unwrap();
-        let pos = pointer.current_location();
-        let under = self.focus_under(pos);
-        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-        let time = self.start_time.elapsed().as_millis() as u32;
-        self.dispatch_pointer_motion(under, pos, serial, time);
-        pointer.frame(self);
-        // Pick-mode transitions are zoom-driven, so the pick affordance won't
-        // refresh on the pinch into/out of pick mode or the zoom-to-1.0
-        // animation after a pick — this per-frame resync is the only pointer
-        // path on every zoom writer. Gate on decoration_cursor too, not
-        // pick_mode() alone: the frame that steps above the threshold must still
-        // run once to clear a latched affordance, and it already reads
-        // pick_mode() == false. The second disjunct is a bare bool (no hit-test)
-        // and self-clears once the clear arm sets decoration_cursor = false.
-        if self.pick_mode() || self.cursor.decoration_cursor {
-            self.update_decoration_cursor(pos);
-        }
     }
 
     /// Apply scroll momentum each frame. Suppressed during active

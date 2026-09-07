@@ -9,19 +9,17 @@
 //! is not covered here: the fixture records positions in a `Vec` and frames in
 //! a separate counter, losing the interleaving such an assertion would need.
 
-use smithay::input::pointer::{Focus, GrabStartData};
-use smithay::utils::{Point, SERIAL_COUNTER};
+use smithay::utils::Point;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1;
 
 use driftwm::canvas::{ScreenPos, screen_to_canvas};
 use driftwm::config::BTN_LEFT;
 
-use crate::grabs::MoveGrab;
 use crate::state::StageWindow;
 
 use super::input_backend::{FakeDevice, pointer_to, pointer_to_screen, press, release};
 use super::{
-    Fixture, assert_click_grab, config, map_top_layer, map_window, pointer_focus, server_surface,
+    Fixture, assert_click_grab, map_top_layer, map_window, pointer_focus, server_surface,
     window_by_app_id,
 };
 
@@ -335,11 +333,11 @@ fn a_geometry_loc_change_on_an_unfocused_window_still_repicks_focus() {
 
 /// A confine keeps the cursor moving inside its surface, so a camera pan
 /// through `warp_pointer` really does relocate it — confines are excluded
-/// from the lock guard specifically so a later, unrelated scene change still
-/// delivers the corrected point instead of treating the confined surface as
-/// an unchanged target.
+/// from the lock guard specifically so the pull delivers the corrected point
+/// instead of treating the confined surface as an unchanged target, and an
+/// unrelated scene change afterwards finds nothing left to send.
 #[test]
-fn a_confined_cursor_panned_by_warp_gets_the_corrected_point_on_the_next_refresh() {
+fn a_confined_cursor_panned_by_warp_gets_the_corrected_point_on_the_next_pull() {
     let mut f = Fixture::new();
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
@@ -362,8 +360,7 @@ fn a_confined_cursor_panned_by_warp_gets_the_corrected_point_on_the_next_refresh
 
     // Stays inside the window, so `warp_pointer` takes the set_location branch
     // that keeps the confine armed — a warp that left the surface would fall
-    // through, drop the confine, and set `pending_pointer_resync` instead,
-    // and this test would prove nothing.
+    // through and drop the confine, and this test would prove nothing.
     let panned = center + Point::from((40.0, 0.0));
     f.state().warp_pointer(panned);
     assert!(
@@ -372,30 +369,16 @@ fn a_confined_cursor_panned_by_warp_gets_the_corrected_point_on_the_next_refresh
          confine armed, or this scenario tests nothing"
     );
 
-    // The unrelated scene change every re-seat follows a real one of — a
-    // layer teardown, a window closing, a pin toggle, a fullscreen exit — is
-    // called directly, matching the idiom already used for this in
-    // `pointer_constraints.rs::a_panel_over_a_locked_cursor_takes_the_pointer`.
-    let trigger = map_top_layer(
-        &mut f,
-        id,
-        "trigger",
-        (200, 100),
-        Some(zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left),
-    );
-
+    // Nothing has pumped since the warp, so the motion below is the pull's.
     f.client(id).state.pointer_positions.clear();
     let frames_before = f.client(id).state.pointer_frames;
-
-    f.client(id).layer(&trigger).layer_surface.destroy();
-    f.client(id).layer(&trigger).surface.destroy();
-    f.double_roundtrip(id);
+    f.roundtrip(id);
 
     let expected_local = panned - pos;
     assert_eq!(
         f.client(id).state.pointer_positions,
         vec![(expected_local.x, expected_local.y)],
-        "the refresh after a confined pan must deliver exactly one motion \
+        "the pull after a confined pan must deliver exactly one motion \
          carrying the point the pan actually moved the cursor to"
     );
     assert_eq!(
@@ -403,79 +386,24 @@ fn a_confined_cursor_panned_by_warp_gets_the_corrected_point_on_the_next_refresh
         frames_before + 1,
         "...paired with exactly one frame"
     );
-}
 
-/// `MoveGrab` does real work in its own `motion` handler (`apply_move`,
-/// edge-pan) and always forwards `None` as focus, so a refresh mid-grab with
-/// nothing under the cursor is exactly the shape a guard could wrongly call
-/// redundant (`old_focus`, `under`, and the record all `None`) if it didn't
-/// special-case a live grab. It must still run the grab's `motion` and move
-/// the window. `pointer_positions` can't witness this — `MoveGrab` never
-/// names a focus target — so the drag's own effect is the assertion.
-#[test]
-fn a_refresh_mid_move_grab_over_empty_canvas_still_moves_the_window() {
-    let mut f = Fixture::with_config(config("[snap]\nenabled = false\n"));
-    let output = f.add_output(1, (1920, 1080));
-    let id = f.add_client();
-
-    map_window(&mut f, id, "w", (200, 150));
-    let window = window_by_app_id(&mut f, "w").unwrap();
-    let initial = Point::from((100, 100));
-    f.state()
-        .map_window(StageWindow::Client(window.clone()), initial, false);
-
-    let start = Point::from((150.0, 125.0));
-    let pointer = f.state().seat.get_pointer().unwrap();
-    pointer.set_location(start);
-
-    let grab = MoveGrab::new(
-        GrabStartData {
-            focus: None,
-            button: BTN_LEFT,
-            location: start,
-        },
-        window.clone(),
-        initial,
-        output,
-        Vec::new(),
+    // The unrelated scene change every earlier re-seat followed — a layer
+    // teardown — has nothing new to say now.
+    let trigger = map_top_layer(
+        &mut f,
+        id,
+        "trigger",
+        (200, 100),
+        Some(zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left),
     );
-    let serial = SERIAL_COUNTER.next_serial();
-    pointer.set_grab(f.state(), grab, serial, Focus::Clear);
-
-    // Establishes `last_pointer_delivery == None` the way a real motion with
-    // nothing under the cursor would — the grab forwards `None` regardless of
-    // what `under` names, so this also holds when the cursor starts over the
-    // window itself.
-    f.state().refresh_pointer_focus();
+    f.client(id).layer(&trigger).layer_surface.destroy();
+    f.client(id).layer(&trigger).surface.destroy();
+    f.double_roundtrip(id);
     assert_eq!(
-        f.state().stage.position_of(&window),
-        Some(initial),
-        "the grab must not have moved the window before the cursor moved, \
-         or this scenario tests nothing"
+        f.client(id).state.pointer_positions,
+        vec![(expected_local.x, expected_local.y)],
+        "a later scene change must not repeat the motion"
     );
-
-    // Off the window, over bare canvas.
-    let far = Point::from((1700.0, 900.0));
-    let pointer = f.state().seat.get_pointer().unwrap();
-    pointer.set_location(far);
-    f.state().refresh_pointer_focus();
-
-    // Mirrors `MoveGrab::apply_move`'s own formula (with snap disabled, so
-    // the natural destination is the actual one): `initial + (far - start)`,
-    // truncated to i32 the same way `apply_move` truncates `new_loc`.
-    let delta = far - start;
-    let expected = Point::from((
-        (initial.x as f64 + delta.x) as i32,
-        (initial.y as f64 + delta.y) as i32,
-    ));
-    assert_eq!(
-        f.state().stage.position_of(&window),
-        Some(expected),
-        "a refresh mid-grab must still run MoveGrab::motion and apply the \
-         drag delta, even with nothing under the cursor to re-seat focus onto"
-    );
-
-    super::end_grab(&mut f);
 }
 
 /// A grab that keeps the same focus target but supplies its own location —
@@ -549,16 +477,10 @@ fn a_screen_space_click_grab_clears_the_delivery_record() {
     f.double_roundtrip(id);
 }
 
-/// `restore_fullscreen_view` clears `pending_pointer_resync` on the premise
-/// that its own `refresh_pointer_focus` call is the resync. Under the guard,
-/// that call can now legitimately produce nothing — this pins that the skip
-/// stays sound when it does: the pointer is still seated on the right
-/// surface, at the right point, not merely an unchanged count against a
-/// record that could itself be stale.
-///
-/// The flag's own clear is not asserted: `restore_fullscreen_view` clears it
-/// unconditionally, so that half can't fail regardless of the guard — only
-/// the skip's soundness, checked below, can.
+/// The fullscreen exit warps the cursor back and the pull after it may find
+/// nothing to send — this pins that a skipped re-seat is sound: the pointer is
+/// still seated on the right surface, at the right point, not merely an
+/// unchanged count against a record that could itself be stale.
 #[test]
 fn restore_fullscreen_view_leaves_the_client_seated_even_when_its_own_refresh_is_skipped() {
     let mut f = Fixture::new();

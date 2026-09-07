@@ -366,7 +366,7 @@ impl PointerConstraintsHandler for DriftWm {
         //
         // Stale covers the cursor having left the surface, not just focus
         // pointing elsewhere: a pan warps the cursor off the window and drops
-        // the constraint a frame before focus follows, and a constraint created
+        // the constraint before the pull re-seats focus, and a constraint created
         // inside that gap would otherwise arm on a window the cursor is no
         // longer over — freezing it there with no path back.
         let already_focused = pointer.current_focus().map(|f| f.0).as_ref() == Some(surface);
@@ -1218,9 +1218,6 @@ impl SessionLockHandler for DriftWm {
         // Kill all transient input/animation state so nothing fires during lock
         self.gesture_state = None;
         self.held_action = None;
-        // Must precede `pointer.unset_grab` below: `MoveGrab::unset` re-arms
-        // `pending_pointer_resync` when it finds `grab_cursor` still set, and
-        // that resync would re-target pointer focus on the next frame.
         self.cursor.grab_cursor = false;
         // Pick mode makes decoration_cursor true over whole window bodies, so
         // locking while hovering a pick target would leave it set through the
@@ -1349,10 +1346,6 @@ impl SessionLockHandler for DriftWm {
         self.touch_state.lock_slots.clear();
         // Restore focus to the window (or layer) that owned it before locking.
         self.update_keyboard_focus(smithay::utils::SERIAL_COUNTER.next_serial());
-        // `lock` cleared pointer focus and nothing re-seats it until the pointer
-        // physically moves, so the first click after unlocking would be
-        // swallowed. Must follow the assignment above — it no-ops while locked.
-        self.refresh_pointer_focus();
         self.mark_all_dirty();
     }
 

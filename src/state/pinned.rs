@@ -77,8 +77,6 @@ impl DriftWm {
                 None,
             );
         }
-        // The hit-test path changed (pinned vs canvas); recompute pointer focus.
-        self.refresh_pointer_focus();
         Ok(())
     }
 
@@ -145,8 +143,6 @@ impl DriftWm {
                 );
             }
         }
-        // The hit-test path changed (pinned vs canvas); recompute pointer focus.
-        self.refresh_pointer_focus();
     }
 
     /// Re-anchor each pinned window's canvas location to the point its fixed

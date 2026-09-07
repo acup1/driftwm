@@ -85,35 +85,3 @@ fn exiting_fullscreen_stops_a_coasting_camera() {
          viewport has no business moving it"
     );
 }
-
-/// The exit re-seats pointer focus itself, so it must not also leave the
-/// deferred resync armed: that recomputes the same answer next frame — a second
-/// full hit-test walk and a second motion — and keeps the render loop out of
-/// its idle path meanwhile.
-#[test]
-fn exiting_fullscreen_leaves_no_deferred_pointer_resync() {
-    let mut f = Fixture::new();
-    let (id, output, window) = fullscreen_ready(&mut f);
-
-    f.state().enter_fullscreen(&window, Some(output.clone()));
-    f.double_roundtrip(id);
-    f.state().pending_pointer_resync = false;
-    let before = f.state().seat.get_pointer().unwrap().current_location();
-    assert!(
-        !f.state().seat.get_pointer().unwrap().is_grabbed(),
-        "a grab would send the warp down a branch that arms nothing"
-    );
-
-    f.state().exit_fullscreen_on(&output);
-
-    assert_ne!(
-        f.state().seat.get_pointer().unwrap().current_location(),
-        before,
-        "the scenario needs an exit that actually warps the cursor, or the \
-         deferred resync it arms is never armed and the assertion below is free"
-    );
-    assert!(
-        !f.state().pending_pointer_resync,
-        "the exit's own re-seat is the resync; a second one is pure repeat"
-    );
-}

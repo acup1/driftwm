@@ -408,7 +408,6 @@ impl DriftWm {
             lock_frame_on_screen: HashSet::new(),
             config_file_mtime: None,
             last_animation_tick: Instant::now(),
-            pending_pointer_resync: false,
             last_pointer_delivery: None,
             commits_since_render: 0,
             focused_output: None,

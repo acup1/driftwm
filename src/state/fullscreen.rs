@@ -189,6 +189,12 @@ impl DriftWm {
 
         self.stage
             .set_fullscreen(&output.name(), window.clone(), saved_location, saved_size);
+        // Until the client answers the offer with a commit, its committed rect
+        // is the old size at the parked position; the pull holds off it.
+        if window.geometry().size != viewport_size {
+            self.stage
+                .set_fullscreen_awaiting_size(&output.name(), Some(window.geometry().size));
+        }
         super::output_state(&output).fullscreen_return = Some(super::FullscreenReturn {
             camera: saved_camera,
             zoom: saved_zoom,
@@ -321,8 +327,8 @@ impl DriftWm {
             // motion below would hand the client an absolute jump it never made,
             // which a game reads as camera movement. A confine falls through and
             // takes the motion instead — that cursor really moves, and nothing
-            // re-seats it afterwards. `warp_pointer` and `flush_pointer_resync`
-            // stay silent for a confine as well, so this is the only site that
+            // re-seats it afterwards. `warp_pointer` stays silent for a confine as
+            // well and leaves the delivery to the pull, so this is the only site that
             // separates the two.
             if self.locked_to(&wl_surface) {
                 pointer.set_location(new_pos);
@@ -517,23 +523,6 @@ impl DriftWm {
                 self.warp_pointer(new_pos);
             }
         }
-
-        // Exiting fullscreen can restore a hidden bar beneath a stationary
-        // cursor; `pointer_over_layer` and smithay's focus are otherwise only
-        // refreshed by pointer motion, and a stale flag would route the next
-        // press/scroll over the bar to the canvas.
-        //
-        // It may now legitimately send nothing — when nothing was revealed and
-        // the delivered point is unchanged, the refresh recognises the re-seat as
-        // redundant. Keep the call: the reveal case is what it is here for, and
-        // the exiting client's own coordinate is corrected by the commit hook
-        // when it drops fullscreen geometry.
-        self.refresh_pointer_focus();
-        // The re-seat above is the resync, so the one the warp deferred would
-        // only repeat the walk. Cleared here and not in `refresh_pointer_focus`:
-        // the flag doubles as udev's wake-up for a warp that schedules no redraw
-        // of its own, and only this path knows its own exit keeps the loop awake.
-        self.pending_pointer_resync = false;
     }
 
     /// Tear down any fullscreen entry whose window is dead, restoring that
@@ -623,6 +612,10 @@ impl DriftWm {
         if offset == stored || super::owes_a_configured_size(window) {
             return;
         }
+        // The client has answered the entry with a size of its own; the pull may
+        // hit-test it from here.
+        self.stage
+            .set_fullscreen_awaiting_size(&output.name(), None);
         let element = StageWindow::Client(window.clone());
         let Some(position) = self.stage.position_of(&element) else {
             return;
@@ -661,13 +654,6 @@ impl DriftWm {
                 moved.y.clamp(origin.y, far.y),
             )));
         }
-        // The picture moved under a stationary cursor, so smithay's cached focus
-        // and surface origin are stale: without this the client keeps receiving
-        // coordinates from where the window used to be until the user moves the
-        // mouse. The cursor carried above stays over the same surface, so
-        // `refresh_pointer_focus`'s own unchanged-focus guard spares a lock from
-        // the re-seat, and a confine gets the absolute motion it really made.
-        self.refresh_pointer_focus();
     }
 
     /// How far the fullscreen window on `output` sits from the origin its park

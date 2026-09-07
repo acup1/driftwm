@@ -972,10 +972,6 @@ pub struct DriftWm {
     /// last_frame_instant to avoid double-ticking when multiple outputs
     /// render in one iteration.
     pub last_animation_tick: Instant,
-    /// A deferred pointer resync is pending. Flushed once per rendered frame so
-    /// a 90-140 Hz pan/momentum stream doesn't re-render a hover-reactive client
-    /// per event. See [`DriftWm::warp_pointer`].
-    pub pending_pointer_resync: bool,
     /// The last [`PointerDelivery`] actually put on the wire. `None` while the
     /// record can't be trusted — nothing under the cursor, or a grab that
     /// substituted its own focus and location. Written only by
@@ -1251,10 +1247,13 @@ impl DriftWm {
 }
 
 impl DriftWm {
-    /// Cull dead windows and refresh output membership even on idle
-    /// (no-render) turns, or a client that died without a clean unmap lingers
-    /// in the read model until the next damage-driven render. Shared by the
-    /// main loop and the test server pump so the two can't drift apart.
+    /// The per-iteration duties shared by the main loop and the test server
+    /// pump, so the two can't drift apart: cull dead windows and refresh output
+    /// membership even on idle (no-render) turns, reveal deferred adoptions,
+    /// re-pick pointer focus, then flush. The adoption sweep sits behind
+    /// `retain_alive` on purpose — it adopts by stage lookup, and a window whose
+    /// client died in this iteration's dispatch must be gone first — and ahead
+    /// of the pull, so a reveal is re-seated in the iteration that made it.
     pub fn refresh_and_flush_clients(&mut self) {
         self.stage.retain_alive();
         // Prune animation entries whose window left the stage — covers crash
@@ -1272,6 +1271,8 @@ impl DriftWm {
             .retain(|id, _| stage.window_by_id(*id).is_some());
         self.refresh_window_outputs();
         self.popups.cleanup();
+        self.sweep_deferred_adoptions();
+        self.refresh_pointer_focus();
         self.display_handle.flush_clients().ok();
     }
 

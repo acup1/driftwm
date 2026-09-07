@@ -177,7 +177,6 @@ pub(crate) fn render_if_needed(data: &mut DriftWm) {
         && !data.output_config_dirty
         && data.pending_dpms.is_empty()
         && !any_chunked_pending
-        && !data.pending_pointer_resync
     {
         // A capped animated background still needs a wake-up for its next
         // tick: no event fires on an idle desktop, and without this the
@@ -234,8 +233,9 @@ pub(crate) fn render_if_needed(data: &mut DriftWm) {
     // 1. Tick animations once for all outputs (before device borrow)
     data.tick_all_animations();
 
-    // Emit the one coalesced pointer motion for this frame, after animations.
-    data.flush_pointer_resync();
+    // Re-pick pointer focus after the tick, so a camera warp's carried motion and
+    // any cursor change it implies go into this frame.
+    data.refresh_pointer_focus();
 
     let mut dev = device.0.borrow_mut();
 

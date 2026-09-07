@@ -13,12 +13,13 @@ use smithay::{
     },
     desktop::{WindowSurfaceType, layer_map_for_output},
     input::pointer::{MotionEvent, RelativeMotionEvent},
-    utils::{Point, SERIAL_COUNTER, Serial, Transform},
+    utils::{Point, Rectangle, SERIAL_COUNTER, Serial, Transform},
     wayland::shell::wlr_layer::Layer as WlrLayer,
 };
 
-use smithay::desktop::Window;
 use smithay::desktop::space::SpaceElement;
+use smithay::desktop::{PopupPointerGrab, Window};
+use smithay::input::pointer::PointerHandle;
 use smithay::reexports::wayland_server::Resource;
 use smithay::wayland::seat::WaylandFocus;
 
@@ -37,6 +38,18 @@ use driftwm::canvas::{
 };
 use driftwm::config::HotCorner;
 use driftwm::protocols::output_power::OutputPowerHandler;
+
+/// What holds the pointer grab, as far as focus delivery is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PointerGrabKind {
+    /// No grab: `under` reaches the client as is.
+    Free,
+    /// smithay's popup grab, live in driftwm's bookkeeping too: it forwards
+    /// `under` to the popup's client and `None` to anyone else.
+    Popup,
+    /// A grab that supplies its own focus and location.
+    Other,
+}
 
 /// What a decoration hit-test landed on: a live client window, or a suspended
 /// window (routed through the same decoration channel — see the suspended hit
@@ -728,8 +741,7 @@ impl DriftWm {
     pub(crate) fn maybe_activate_pointer_constraint(&self) {
         // Nothing behind the lock screen may capture the pointer, and the region
         // test below reads `current_location` as canvas coords, which a locked
-        // session doesn't hold. `unlock` re-runs this via
-        // `refresh_pointer_focus`.
+        // session doesn't hold. The pull after `unlock` re-runs this.
         if self.session_lock.is_locked() {
             return;
         }
@@ -778,12 +790,16 @@ impl DriftWm {
     /// describing an older delivery, so the guard errs toward sending again —
     /// but it is why the record is a shadow copy and not ground truth.
     ///
-    /// A grabbed pointer routes through the grab, which supplies its own focus
-    /// and location, so what `under` says was delivered is a guess: clear the
-    /// record instead of writing a lie into it. The record is written before the
-    /// dispatch, which is only safe while no grab sends a motion from its own
-    /// `motion` handler — one that did would leave the record describing the
-    /// inner delivery while the outer one is what reached the wire.
+    /// A grabbed pointer routes through the grab. Most grabs supply their own
+    /// focus and location, so what `under` says was delivered is a guess and
+    /// the record is cleared instead of writing a lie into it. A popup grab is
+    /// the exception: it forwards `under` verbatim when the target belongs to
+    /// the popup's client and `None` otherwise, which is knowable here — and a
+    /// cleared record would make the pull re-send a motion every iteration for
+    /// as long as a menu is open. The record is written before the dispatch,
+    /// which is only safe while no grab sends a motion from its own `motion`
+    /// handler — one that did would leave the record describing the inner
+    /// delivery while the outer one is what reached the wire.
     ///
     /// Frame handling deliberately stays with the caller. Two sites group this
     /// motion with a later `axis` or `relative_motion` under one frame, and a
@@ -796,13 +812,14 @@ impl DriftWm {
         time: u32,
     ) {
         let pointer = self.seat.get_pointer().unwrap();
-        self.last_pointer_delivery = if pointer.is_grabbed() {
-            None
-        } else {
-            under
-                .as_ref()
-                .map(|(focus, origin)| (focus.clone(), *origin, location - *origin))
+        let delivered = match self.pointer_grab_kind(&pointer) {
+            PointerGrabKind::Free => under.clone(),
+            PointerGrabKind::Popup => self.popup_grab_delivery(under.clone()),
+            PointerGrabKind::Other => None,
         };
+        self.last_pointer_delivery = delivered
+            .as_ref()
+            .map(|(focus, origin)| (focus.clone(), *origin, location - *origin));
         pointer.motion(
             self,
             under,
@@ -814,17 +831,96 @@ impl DriftWm {
         );
     }
 
-    /// Recompute pointer focus at the current cursor location and dispatch a
-    /// synthetic motion. Call after the scene under the cursor changes without a
-    /// real pointer event (e.g. the window under the cursor closes): smithay's
-    /// `PointerHandle` keeps its last focus until the next `motion()`, so without
-    /// this, button/axis events keep routing to the destroyed surface until the
-    /// user physically moves the pointer.
+    /// What holds the pointer grab, as far as focus delivery is concerned.
+    pub(crate) fn pointer_grab_kind(&self, pointer: &PointerHandle<DriftWm>) -> PointerGrabKind {
+        match pointer.with_grab(|_, grab| grab.is::<PopupPointerGrab<DriftWm>>()) {
+            None => PointerGrabKind::Free,
+            // The pointer grab outlives driftwm's own teardown by one idle
+            // (`tear_down_popup_grab` defers the ungrab); until that runs the
+            // grab is nobody's to dispatch through.
+            Some(true) if self.popup_grab.is_some() => PointerGrabKind::Popup,
+            Some(_) => PointerGrabKind::Other,
+        }
+    }
+
+    /// `under` as smithay's popup grab forwards it: the target when it belongs
+    /// to the popup's client, `None` for anyone else.
+    fn popup_grab_delivery(
+        &self,
+        under: Option<(FocusTarget, Point<f64, Logical>)>,
+    ) -> Option<(FocusTarget, Point<f64, Logical>)> {
+        let popup = self.popup_grab.as_ref()?.grab.current_grab()?;
+        let popup_id = popup.wl_surface()?.id();
+        under.filter(|(focus, _)| focus.0.id().same_client_as(&popup_id))
+    }
+
+    /// Whether `focus` belongs to a window whose committed rect is transient —
+    /// a fullscreen entry the client has not answered, or an owed recenter —
+    /// with `canvas_pos` inside the rect it is heading for.
+    fn focus_holds_through_transition(
+        &self,
+        focus: &FocusTarget,
+        canvas_pos: Point<f64, Logical>,
+    ) -> bool {
+        let Some(window) = self.window_for_surface(&focus.0) else {
+            return false;
+        };
+        let element = StageWindow::Client(window.clone());
+        let Some(position) = self.stage.position_of(&element) else {
+            return false;
+        };
+        let destination = if let Some(output) = self.find_fullscreen_output_for_surface(&focus.0) {
+            let awaiting = self
+                .stage
+                .fullscreen_on(&output.name())
+                .and_then(|entry| entry.awaiting_size);
+            if awaiting != Some(window.geometry().size) {
+                return false;
+            }
+            Rectangle::new(position, crate::state::output_logical_size(&output))
+        } else if let Some(owed) = self.pending_recenter.get(&focus.0.id()) {
+            let size = crate::state::configured_window_size(&window);
+            Rectangle::new(
+                crate::state::frame_loc_for_center(owed.target_center, size, 0),
+                size,
+            )
+        } else {
+            return false;
+        };
+        destination.to_f64().contains(canvas_pos)
+    }
+
+    /// Re-pick pointer focus at the cursor's current location and deliver what
+    /// changed — the pull. Runs once per event-loop iteration
+    /// (`refresh_and_flush_clients`) and once per rendered frame after the
+    /// animation tick, so no scene change has to remember to call it. A request
+    /// handler about to act on pointer focus may still call it to make focus
+    /// current at that request boundary (`new_constraint` does); nothing calls
+    /// it *because* it changed the scene.
     pub(crate) fn refresh_pointer_focus(&mut self) {
         if self.session_lock.is_locked() {
             return;
         }
         let pointer = self.seat.get_pointer().unwrap();
+        // Never through a grab that supplies its own focus and does work in
+        // `motion` (a move grab's `apply_move` and edge pan): real input and the
+        // carried motion in `warp_pointer` drive those, and the first pull after
+        // the release repicks. A popup grab forwards what it is handed and does
+        // nothing else while live, so a menu keeps its hover state as things
+        // move under a stationary cursor. Once ended it is torn down here rather
+        // than dispatched into: smithay's own teardown would unset the keyboard
+        // grab and rewrite keyboard focus from inside the pointer dispatch.
+        let grab = self.pointer_grab_kind(&pointer);
+        match grab {
+            PointerGrabKind::Other => return,
+            PointerGrabKind::Popup
+                if self.popup_grab.as_ref().is_some_and(|g| g.grab.has_ended()) =>
+            {
+                self.tear_down_popup_grab(SERIAL_COUNTER.next_serial());
+                return;
+            }
+            _ => {}
+        }
         let canvas_pos = pointer.current_location();
         let screen_pos = driftwm::canvas::canvas_to_screen(
             driftwm::canvas::CanvasPos(canvas_pos),
@@ -833,8 +929,26 @@ impl DriftWm {
         )
         .0;
         let old_focus = pointer.current_focus();
+        // A fullscreen entry, or an exit, fit or fill, moves a window before the
+        // client commits at the new size, so for a few frames its committed rect
+        // is the old size at the new position. Hit-testing that would un-seat
+        // the surface the move put under the cursor — dropping a game's lock —
+        // only to re-seat it a frame later. Hold while the focused window is
+        // mid-transition and the cursor is inside the rect it is heading for.
+        if old_focus
+            .as_ref()
+            .is_some_and(|focus| self.focus_holds_through_transition(focus, canvas_pos))
+        {
+            return;
+        }
         let under = self.pointer_focus_under_pick(screen_pos, canvas_pos);
-        let focus_unchanged = under.as_ref().map(|(focus, _)| focus) == old_focus.as_ref();
+        // What the client is actually handed: a popup grab filters `under` to
+        // its own client.
+        let delivered = match grab {
+            PointerGrabKind::Popup => self.popup_grab_delivery(under.clone()),
+            _ => under.clone(),
+        };
+        let focus_unchanged = delivered.as_ref().map(|(focus, _)| focus) == old_focus.as_ref();
         // A lock still holding the surface under the cursor has nothing to
         // re-seat, and the motion below would read as a jump the client never
         // made: the lock freezes the cursor while `cursor_position_hint` keeps
@@ -859,13 +973,9 @@ impl DriftWm {
         // delta the difference is an ulp, and erring toward a redundant motion
         // is the safe direction, so an epsilon would only buy suppressed sends
         // the client is owed.
-        let delivery = under
+        let delivery = delivered
             .as_ref()
             .map(|(focus, origin)| (focus.clone(), *origin, canvas_pos - *origin));
-        // Never while grabbed: the grab does work in its motion handler (edge
-        // pan, member shifts) that a skipped tick would drop, and it delivers
-        // something other than `under` anyway.
-        //
         // `focus_unchanged` is load-bearing, not belt-and-braces. `None` in the
         // record is overloaded — nothing under the cursor, nothing recorded yet,
         // *and* "the last dispatch went through a grab" — so the delivery
@@ -874,17 +984,27 @@ impl DriftWm {
         // then closes with the cursor over bare canvas, both sides are `None`
         // while smithay still holds focus on the dead surface. Skipping there
         // routes the next press into a destroyed surface, which is the whole
-        // reason this function exists. Do not drop the conjunct.
-        let redundant =
-            !pointer.is_grabbed() && focus_unchanged && delivery == self.last_pointer_delivery;
+        // reason this function exists. Do not drop the conjunct. The grab
+        // conjunct the guard used to carry is the early return above.
+        let redundant = focus_unchanged && delivery == self.last_pointer_delivery;
         if !redundant {
             let serial = SERIAL_COUNTER.next_serial();
             let time = self.start_time.elapsed().as_millis() as u32;
             self.dispatch_pointer_motion(under, canvas_pos, serial, time);
             pointer.frame(self);
         }
-        self.update_decoration_cursor(canvas_pos);
+        // Cheap, and load-bearing on the skip path: a persistent confine whose
+        // region is re-set around the parked cursor becomes armable with no
+        // delivery change, and nothing else re-evaluates it.
         self.update_pointer_constraint(old_focus);
+        // A second z-order walk that can re-rasterise a title bar, so only when
+        // something changed or an affordance is in play: pick mode flips with
+        // the zoom and no pointer motion, and a latched affordance has to clear
+        // on the frame that steps back above the threshold, which already reads
+        // `pick_mode() == false` — hence the bare bool as the second disjunct.
+        if !redundant || self.pick_mode() || self.cursor.decoration_cursor {
+            self.update_decoration_cursor(canvas_pos);
+        }
     }
 
     /// Pointer focus while locked: `output`'s lock surface at a zero origin,
@@ -1830,7 +1950,7 @@ impl DriftWm {
 
     /// Update cursor icon based on what decoration area the pointer is over.
     /// Called after pointer motion to set resize/pointer cursors for SSD areas.
-    /// `pub(crate)` so `flush_pointer_resync` can refresh the pick affordance on
+    /// `pub(crate)` so the pull can refresh the pick affordance on
     /// zoom-driven frames that no pointer motion covers.
     pub(crate) fn update_decoration_cursor(
         &mut self,

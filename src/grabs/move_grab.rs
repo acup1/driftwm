@@ -460,15 +460,11 @@ impl PointerGrab<DriftWm> for MoveGrab {
         data.session_store_mark_dirty();
         // A pick-mode promote is the only move that sets grab_cursor (title-bar
         // / alt+drag / gesture / pinned moves never do, and resize grabs can't
-        // be concurrent), so this restores only that case. Defer to the next
-        // frame's flush rather than calling into PointerHandle here, where the
-        // pointer mutex may be held: clearing grab_cursor lets flush's
-        // `pick_mode() || decoration_cursor` gate run update_decoration_cursor,
-        // which recomputes Pointer/default.
-        if data.cursor.grab_cursor {
-            data.cursor.grab_cursor = false;
-            data.pending_pointer_resync = true;
-        }
+        // be concurrent), so this restores only that case. A plain clear rather
+        // than a call into PointerHandle, whose mutex may be held here: the
+        // pull's decoration pass runs in pick mode and recomputes
+        // Pointer/default from it.
+        data.cursor.grab_cursor = false;
     }
 
     crate::grabs::forward_pointer_grab_methods!();

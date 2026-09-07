@@ -333,9 +333,9 @@ fn suspended_body_occludes_gesture_hit_tests_and_focus_center() {
     // FocusCenter over the stand-in centers the stand-in: the focus intent lands
     // on it and the client beneath takes no seat focus.
     f.state().warp_pointer(over);
-    // A deferred pointer resync (camera warp/animation) ending over the stand-in
+    // The pull after a camera warp or animation ending over the stand-in
     // resolves to no pointer focus — the hidden client gets no stray enter.
-    f.state().flush_pointer_resync();
+    f.state().refresh_pointer_focus();
     assert!(
         f.state()
             .seat
@@ -343,7 +343,7 @@ fn suspended_body_occludes_gesture_hit_tests_and_focus_center() {
             .unwrap()
             .current_focus()
             .is_none(),
-        "a deferred resync over the stand-in sends no enter to the client beneath"
+        "a pull over the stand-in sends no enter to the client beneath"
     );
     f.state()
         .execute_action(&driftwm::config::Action::FocusCenter);

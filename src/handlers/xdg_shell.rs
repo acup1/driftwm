@@ -414,9 +414,6 @@ impl XdgShellHandler for DriftWm {
             // The window left the stage; the durable record must follow, or a
             // stale flush could re-save a window the user closed minutes ago.
             self.session_store_mark_dirty();
-            // The window may have sat under the cursor; re-target pointer focus
-            // now that it's gone so clicks don't fall into the destroyed surface.
-            self.refresh_pointer_focus();
         }
         // Must run after the focus-follow block above: that derives the dying
         // window's snap rect from stable_snap_rects (and, on a cache miss, live

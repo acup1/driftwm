@@ -419,17 +419,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Starting event loop — launch apps with: WAYLAND_DISPLAY={socket_name} <app>");
     let run_result = event_loop.run(None, &mut data, |data| {
         backend::udev::render_if_needed(data);
-        data.refresh_and_flush_clients();
         // Expire suspend / real-close marks a refused close left behind, and
         // garbage-collect pending relaunches past their deadline. The fixture
         // drives these with an injected `now`; production uses the wall clock
-        // here (the only wall-clock read for these deadlines).
+        // here (the only wall-clock read for these deadlines). Before the
+        // shared refresh, whose adoption sweep then reveals a deferral whose
+        // deadline just passed on the same tick rather than the next one.
         let now = std::time::Instant::now();
         data.sweep_marks(now);
         data.sweep_pending_relaunches(now);
-        // After the relaunch sweep, so a deferral whose deadline just passed
-        // reveals its window on the same tick rather than the next one.
-        data.sweep_deferred_adoptions();
+        data.refresh_and_flush_clients();
         // Last, so a camera animation that ticked during this iteration's
         // render is diffed at the position it actually reached.
         data.session_store_watch_cameras();

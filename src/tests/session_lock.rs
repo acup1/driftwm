@@ -955,11 +955,11 @@ fn new_surface_from_a_refused_client_does_not_overwrite_the_incumbent_lock_surfa
     );
 }
 
-/// A pointer resync deferred by `warp_pointer` and flushed on the next
-/// rendered frame must not re-target focus at the app behind the lock screen —
-/// `focus_under` is lock-unaware, so the gate has to live in the flush itself.
+/// The pull runs every iteration, locked or not, and `focus_under` is
+/// lock-unaware — so the gate has to live in the pull itself, or a pump
+/// mid-lock would re-target focus at the app behind the lock screen.
 #[test]
-fn flush_pointer_resync_does_not_restore_focus_to_the_window_behind_the_lock_screen() {
+fn a_pull_while_locked_does_not_restore_focus_to_the_window_behind_the_lock_screen() {
     let mut f = Fixture::new();
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
@@ -973,14 +973,14 @@ fn flush_pointer_resync_does_not_restore_focus_to_the_window_behind_the_lock_scr
         "precondition: lock() cleared pointer focus"
     );
 
-    f.state().pending_pointer_resync = true;
-    f.state().flush_pointer_resync();
+    f.pump(2);
+    f.state().refresh_pointer_focus();
 
     assert_eq!(
         pointer_focus(&mut f),
         None,
-        "a resync flushed mid-lock must not restore pointer focus to the app behind \
-         the lock screen"
+        "a pull mid-lock must not restore pointer focus to the app behind the \
+         lock screen"
     );
 }
 
@@ -1015,7 +1015,7 @@ fn enter_fullscreen_while_locked_does_not_focus_the_pointer_on_the_window() {
     );
 }
 
-/// `unlock()` must re-seat pointer focus without the pointer moving — the
+/// The pull after `unlock()` must re-seat pointer focus without the pointer moving — the
 /// first click after unlocking has to reach the window under the cursor, not
 /// wait for a motion event to notice it's there.
 #[test]
@@ -1034,11 +1034,12 @@ fn unlock_reseats_pointer_focus_without_the_pointer_moving() {
     );
 
     f.state().unlock();
+    f.pump(1);
 
     assert_eq!(
         pointer_focus(&mut f),
         Some(server_surface(&window)),
-        "unlock() must restore pointer focus to the window under the cursor without \
+        "the pull after unlock() must restore pointer focus to the window under the cursor without \
          waiting for the pointer to move"
     );
 }
@@ -1141,6 +1142,7 @@ fn lock_clears_a_touch_close_armed_before_it() {
     // looks at `pending_close`; the stale close would fire on the first
     // lift *after* unlock, which is the scenario this test is about.
     f.state().unlock();
+    f.pump(1);
     f.roundtrip(id);
     touch_up(&mut f, 0);
     f.roundtrip(id);

@@ -447,10 +447,10 @@ fn focus_suppressed_over_window_in_pick_mode() {
         "a canvas window yields no pointer focus in pick mode"
     );
 
-    // The per-frame resync agrees, so no camera/zoom frame hands the client its
+    // The pull agrees, so no camera/zoom frame hands the client its
     // enter back.
     f.state().warp_pointer(canvas);
-    f.state().flush_pointer_resync();
+    f.state().refresh_pointer_focus();
     assert!(
         f.state()
             .seat
@@ -458,7 +458,7 @@ fn focus_suppressed_over_window_in_pick_mode() {
             .unwrap()
             .current_focus()
             .is_none(),
-        "a resync over the window sends no enter to the client"
+        "a pull over the window sends no enter to the client"
     );
 }
 
