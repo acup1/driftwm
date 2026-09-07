@@ -23,18 +23,19 @@ use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1;
 
 use driftwm::config::{Action, BTN_LEFT, Direction};
 
+use crate::input::PointerGrabKind;
 use crate::ipc::dispatch;
 use crate::ipc::protocol::{Request, Response};
 use crate::state::{DriftWm, StageWindow};
 
 use super::client::ClientId;
 use super::input_backend::{
-    FakeDevice, pen_proximity_in, pen_to, pointer_to, pointer_to_screen, press, release,
-    tablet_added,
+    FakeDevice, key_press, key_release, pen_proximity_in, pen_to, pointer_to, pointer_to_screen,
+    press, release, tablet_added,
 };
 use super::{
-    Fixture, assert_click_grab, end_grab, first_popup_surface, map_popup, map_top_layer,
-    map_window, pointer_focus, server_surface, window_by_app_id,
+    Fixture, assert_click_grab, end_grab, first_popup_surface, keyboard_focus, map_popup,
+    map_top_layer, map_window, pointer_focus, server_surface, window_by_app_id,
 };
 
 /// Map a parent window, park a stationary cursor where the default
@@ -138,6 +139,52 @@ fn a_grabbed_popup_mapping_under_a_stationary_cursor_takes_pointer_focus_and_han
         f.client(id).state.pointer_positions.last(),
         Some(&(expected_local.x, expected_local.y)),
         "the parent must be handed a motion carrying its own local point"
+    );
+}
+
+/// evdev code for a key with no default binding — the space `key_press`
+/// reports in.
+const KEY_Z: u32 = 44;
+
+/// Dismissing a grabbing popup hands keyboard focus back to its parent. A
+/// popup grab moves keyboard focus onto the popup surface lazily, at the
+/// first key event it forwards through the grab (`PopupKeyboardGrab::input`
+/// in smithay re-seats focus on its current grab before dispatching the key —
+/// see `a_window_stays_focused_while_its_popup_holds_the_keyboard` in
+/// `opacity.rs`); tearing the dead grab down before another key event arrives
+/// restores nothing on its own, so the pull has to re-derive focus.
+#[test]
+fn dismissing_a_grabbing_popup_hands_keyboard_focus_back_to_its_parent() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let device = FakeDevice::mouse();
+
+    let (parent_window, _parent_pos, _cursor, popup_surface) =
+        setup_grabbed_popup_over_stationary_cursor(&mut f, id, &device);
+
+    key_press(&mut f, KEY_Z);
+    key_release(&mut f, KEY_Z);
+    let popup_server = first_popup_surface(&server_surface(&parent_window)).unwrap();
+    assert_eq!(
+        keyboard_focus(&mut f),
+        Some(popup_server),
+        "test setup bug: a key event through the grab must seat keyboard \
+         focus on the popup"
+    );
+
+    f.client(id).popup(&popup_surface).destroy();
+    // Mirrors the pointer-focus scenario above: the destroy's own pull tears
+    // the dead grab down, and the idle's restore motion lands on the pull
+    // after that.
+    f.double_roundtrip(id);
+    f.pump(3);
+
+    assert_eq!(
+        keyboard_focus(&mut f),
+        Some(server_surface(&parent_window)),
+        "dismissing the grabbing popup must hand keyboard focus back to its \
+         parent"
     );
 }
 
@@ -673,5 +720,66 @@ fn a_persistent_confine_arms_once_its_region_is_reset_around_the_parked_cursor()
         f.client(id).state.pointer_positions.len(),
         positions_before,
         "arming a confine around an unmoved cursor must deliver no new motion"
+    );
+}
+
+/// A click-drag that stays over the same window it started on: smithay's
+/// implicit `ClickGrab` keeps delivering to that window at `under`'s origin
+/// for as long as the cursor stays over it, so the pull's delivery record
+/// must already match what the client was handed — releasing leaves nothing
+/// new to send.
+#[test]
+fn a_drag_inside_a_window_leaves_nothing_for_the_pull_to_send_at_release() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let device = FakeDevice::mouse();
+
+    map_window(&mut f, id, "w", (400, 300));
+    let window = window_by_app_id(&mut f, "w").unwrap();
+    f.state().map_window(
+        StageWindow::Client(window.clone()),
+        Point::from((0, 0)),
+        false,
+    );
+    f.state().with_output_state(|os| {
+        os.zoom = 1.0;
+        os.camera = Point::from((0.0, 0.0));
+    });
+
+    let start = Point::from((100.0, 100.0));
+    pointer_to_screen(&mut f, &device, start);
+    f.roundtrip(id);
+    assert_eq!(
+        pointer_focus(&mut f),
+        Some(server_surface(&window)),
+        "test setup bug: the cursor must start over the window"
+    );
+
+    press(&mut f, &device, BTN_LEFT);
+    let pointer = f.state().seat.get_pointer().unwrap();
+    assert_eq!(
+        f.state().pointer_grab_kind(&pointer),
+        PointerGrabKind::Click,
+        "test setup bug: a plain press over window content must install \
+         smithay's implicit click grab"
+    );
+
+    // Two motions while the drag stays over the same window — the client has
+    // now received the enter and both of these.
+    pointer_to_screen(&mut f, &device, start + Point::from((5.0, 0.0)));
+    pointer_to_screen(&mut f, &device, start + Point::from((10.0, 0.0)));
+    f.roundtrip(id);
+    let positions_after_drag = f.client(id).state.pointer_positions.len();
+
+    release(&mut f, &device, BTN_LEFT);
+    f.roundtrip(id);
+    f.roundtrip(id);
+
+    assert_eq!(
+        f.client(id).state.pointer_positions.len(),
+        positions_after_drag,
+        "the pull must have nothing left to send once the click grab ends \
+         over the same window it started on"
     );
 }
