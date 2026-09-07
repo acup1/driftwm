@@ -1325,6 +1325,10 @@ impl DriftWm {
                 "virtual_kb_bindings",
                 self.virtual_kb_bindings.keyboard_count(),
             ),
+            (
+                "virtual_keymaps_held",
+                self.virtual_kb_bindings.held_keymap_count(),
+            ),
             ("state_file_cameras", self.state_file_cameras.len()),
             ("disconnected_outputs", self.disconnected_outputs.len()),
             ("pending_mode_changes", self.pending_mode_changes.len()),

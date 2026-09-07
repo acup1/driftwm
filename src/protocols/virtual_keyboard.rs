@@ -21,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::FileExt;
+use std::rc::Rc;
 
 use smithay::input::keyboard::{
     KeyboardHandle, KeyboardTarget, KeymapFile, Keysym, ModifiersState, xkb,
@@ -96,22 +97,27 @@ impl VirtualKeyboardManagerState {
     }
 }
 
-/// One uploaded keymap. A `keymap` request replaces the keyboard's keymap, so
-/// the generation tells a client still holding the previous one apart.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct KeymapId {
-    keyboard: ObjectId,
-    generation: u64,
-}
-
 /// Per-virtual-keyboard state mirrored from the client's `keymap` and
 /// `modifiers` requests, keyed by the `zwp_virtual_keyboard_v1` resource so
 /// multiple virtual keyboards don't mix layouts, plus the record of which
-/// `wl_keyboard`s currently hold a virtual keymap instead of the seat's.
+/// `wl_keyboard`s currently hold a keymap other than the seat's.
+///
+/// Keymaps are told apart by text, as smithay does with a hash of it: an
+/// on-screen keyboard that uploads the seat's own layout must cost the client
+/// nothing — no keymap event, no recompile, and no modifiers event resetting
+/// whatever the physical keyboard holds.
 #[derive(Default)]
 pub struct VirtualKeyboardBindings {
     keyboards: HashMap<ObjectId, VirtualKeyboard>,
-    foreign_keymaps: Vec<(Weak<WlKeyboard>, KeymapId)>,
+    foreign_keymaps: Vec<(Weak<WlKeyboard>, Rc<str>)>,
+    /// The seat's keymap, copied out on first use and dropped when the seat's
+    /// keymap may have changed.
+    seat_keymap: Option<SeatKeymap>,
+}
+
+struct SeatKeymap {
+    text: Rc<str>,
+    file: KeymapFile,
 }
 
 #[derive(Default)]
@@ -120,11 +126,11 @@ struct VirtualKeyboard {
     /// Keycodes whose press a binding consumed; their release must be
     /// swallowed too, or the client sees a release without a press.
     swallowed: HashSet<u32>,
-    generation: u64,
 }
 
 struct VirtualKeymap {
     file: KeymapFile,
+    text: Rc<str>,
     state: xkb::State,
     mods: ModifiersState,
 }
@@ -139,11 +145,22 @@ impl VirtualKeyboardBindings {
         self.keyboards.len()
     }
 
-    /// Forget which `wl_keyboard`s hold a virtual keymap. Call after the
-    /// seat's keymap changes: smithay broadcasts the new one to every
-    /// `wl_keyboard`, so nothing holds a virtual keymap any more.
+    /// Number of live `wl_keyboard`s holding a virtual keymap (for leak
+    /// diagnostics).
+    pub fn held_keymap_count(&self) -> usize {
+        self.foreign_keymaps
+            .iter()
+            .filter(|(kbd, _)| kbd.upgrade().is_ok())
+            .count()
+    }
+
+    /// Drop the copy of the seat's keymap. Call after the seat's keymap may
+    /// have changed. The records stay: smithay broadcasts a changed keymap to
+    /// every `wl_keyboard`, but stays silent when the new one compiles to the
+    /// same text, and either way the next physical key sends the seat's to
+    /// whoever still differs.
     pub fn seat_keymap_changed(&mut self) {
-        self.foreign_keymaps.clear();
+        self.seat_keymap = None;
     }
 
     fn track_keymap(&mut self, id: ObjectId, format: u32, fd: &OwnedFd, size: usize) {
@@ -187,9 +204,9 @@ impl VirtualKeyboardBindings {
         // keeps the modifiers and the swallowed set: a key pressed under the old
         // keymap still owes its release a swallow.
         let mods = kb.keymap.take().map(|k| k.mods).unwrap_or_default();
-        kb.generation += 1;
         kb.keymap = Some(VirtualKeymap {
             file: KeymapFile::new(&keymap),
+            text: string.into(),
             state: xkb::State::new(&keymap),
             mods,
         });
@@ -248,16 +265,9 @@ fn handle_key<D: VirtualKeyboardBindingHandler>(
     };
     // Raw evdev keycode (wl_keyboard coding) → xkb keycode space.
     let sym = keymap.state.key_get_one_sym(xkb::Keycode::new(key + 8));
-    let effective = xkb::STATE_MODS_EFFECTIVE;
-    let xkb_state = &keymap.state;
-    let modifiers = ModifiersState {
-        ctrl: xkb_state.mod_name_is_active(xkb::MOD_NAME_CTRL, effective),
-        alt: xkb_state.mod_name_is_active(xkb::MOD_NAME_ALT, effective),
-        shift: xkb_state.mod_name_is_active(xkb::MOD_NAME_SHIFT, effective),
-        logo: xkb_state.mod_name_is_active(xkb::MOD_NAME_LOGO, effective),
-        iso_level5_shift: xkb_state.mod_name_is_active(xkb::MOD_NAME_MOD3, effective),
-        ..Default::default()
-    };
+    // The modifiers the client would be told, so a combo the compositor
+    // consumes and one that reaches the client never disagree.
+    let modifiers = keymap.mods;
     if !state.virtual_key_binding(&modifiers, sym) {
         return false;
     }
@@ -278,9 +288,36 @@ where
     Some((focus, client))
 }
 
+/// The seat's keymap as text plus a sealed file to send it with, copied out
+/// once and reused until the seat's keymap may have changed.
+fn seat_keymap<D>(state: &mut D, keyboard: &KeyboardHandle<D>) -> Rc<str>
+where
+    D: SeatHandler + VirtualKeyboardBindingHandler + 'static,
+{
+    if let Some(seat) = &state.virtual_keyboard_bindings().seat_keymap {
+        return seat.text.clone();
+    }
+    let (text, file) = keyboard.with_xkb_state(state, |context| {
+        let xkb = context.xkb().lock().unwrap();
+        // SAFETY: both calls copy the keymap out — the text into its own
+        // string, `KeymapFile::new` into a sealed file — and keep no reference.
+        let keymap = unsafe { xkb.keymap() };
+        (
+            keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1),
+            KeymapFile::new(keymap),
+        )
+    });
+    let text: Rc<str> = text.into();
+    state.virtual_keyboard_bindings().seat_keymap = Some(SeatKeymap {
+        text: text.clone(),
+        file,
+    });
+    text
+}
+
 /// Send the virtual keyboard's keymap to the focused client's `wl_keyboard`s
-/// that don't hold it yet, followed by its modifiers, as a keymap change
-/// must be. Returns whether any keymap went out.
+/// that don't hold that text yet, followed by its modifiers, as a keymap
+/// change must be. Returns whether any keymap went out.
 fn send_keymap<D>(
     state: &mut D,
     seat: &Seat<D>,
@@ -294,24 +331,23 @@ where
     D::KeyboardFocus: WaylandFocus,
 {
     let kbds: Vec<WlKeyboard> = keyboard.client_keyboards(client).collect();
+    let seat_text = seat_keymap(state, keyboard);
     let bindings = state.virtual_keyboard_bindings();
-    let Some(kb) = bindings.keyboards.get(&id) else {
+    let Some(keymap) = bindings
+        .keyboards
+        .get(&id)
+        .and_then(|kb| kb.keymap.as_ref())
+    else {
         return false;
-    };
-    let Some(keymap) = kb.keymap.as_ref() else {
-        return false;
-    };
-    let keymap_id = KeymapId {
-        keyboard: id.clone(),
-        generation: kb.generation,
     };
     let mut sent = false;
     for kbd in kbds {
-        let holds_it = bindings
+        let held = bindings
             .foreign_keymaps
             .iter()
-            .any(|(held, held_id)| *held_id == keymap_id && held.upgrade().is_ok_and(|h| h == kbd));
-        if holds_it {
+            .find(|(held, _)| held.upgrade().is_ok_and(|h| h == kbd))
+            .map_or(&seat_text, |(_, text)| text);
+        if **held == *keymap.text {
             continue;
         }
         if let Err(err) = keymap.file.send(&kbd) {
@@ -321,9 +357,12 @@ where
         bindings
             .foreign_keymaps
             .retain(|(held, _)| held.upgrade().is_ok_and(|h| h != kbd));
-        bindings
-            .foreign_keymaps
-            .push((kbd.downgrade(), keymap_id.clone()));
+        // A keymap that reads the same as the seat's leaves nothing to restore.
+        if *keymap.text != *seat_text {
+            bindings
+                .foreign_keymaps
+                .push((kbd.downgrade(), keymap.text.clone()));
+        }
         sent = true;
     }
     let mods = keymap.mods;
@@ -386,25 +425,28 @@ where
     D: SeatHandler + VirtualKeyboardBindingHandler + 'static,
     D::KeyboardFocus: WaylandFocus + Clone,
 {
-    let records = std::mem::take(&mut state.virtual_keyboard_bindings().foreign_keymaps);
-    let held: Vec<WlKeyboard> = records
-        .into_iter()
-        .filter_map(|(kbd, _)| kbd.upgrade().ok())
-        .collect();
-    if held.is_empty() {
+    if state.virtual_keyboard_bindings().foreign_keymaps.is_empty() {
         return;
     }
     let Some(keyboard) = seat.get_keyboard() else {
         return;
     };
-    let seat_keymap = keyboard.with_xkb_state(state, |context| {
-        let xkb = context.xkb().lock().unwrap();
-        // SAFETY: `KeymapFile::new` serialises the keymap into its own string
-        // and keeps no reference to it.
-        KeymapFile::new(unsafe { xkb.keymap() })
-    });
+    let seat_text = seat_keymap(state, &keyboard);
+    let records = std::mem::take(&mut state.virtual_keyboard_bindings().foreign_keymaps);
+    let held: Vec<WlKeyboard> = records
+        .into_iter()
+        .filter(|(_, text)| **text != *seat_text)
+        .filter_map(|(kbd, _)| kbd.upgrade().ok())
+        .collect();
+    if held.is_empty() {
+        return;
+    }
+    let bindings = state.virtual_keyboard_bindings();
+    let Some(seat_keymap) = bindings.seat_keymap.as_ref() else {
+        return;
+    };
     for kbd in held {
-        if let Err(err) = seat_keymap.send(&kbd) {
+        if let Err(err) = seat_keymap.file.send(&kbd) {
             tracing::warn!("virtual keyboard: failed to restore the seat keymap: {err}");
         }
     }
@@ -527,7 +569,6 @@ where
                 );
                 deliver_modifiers(state, &self.seat, id);
             }
-            zwp_virtual_keyboard_v1::Request::Destroy => {}
             _ => {}
         }
     }

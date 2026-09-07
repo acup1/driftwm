@@ -173,12 +173,12 @@ impl DriftWm {
         let tool = tablet_seat
             .get_tool(&event.tool())
             .unwrap_or_else(|| tablet_seat.add_wp_tool(self, &display_handle, &event.tool()));
-        let Some(tablet) = tablet_seat.get_tablet(&TabletDescriptor::from(&event.device())) else {
-            return;
-        };
-
         match event.state() {
             ProximityState::In => {
+                let Some(tablet) = tablet_seat.get_tablet(&TabletDescriptor::from(&event.device()))
+                else {
+                    return;
+                };
                 tool.proximity_in(
                     self,
                     under,
@@ -191,6 +191,8 @@ impl DriftWm {
                     },
                 );
             }
+            // Not gated on the tablet still being registered: the unplug that
+            // removed it can precede this event, and the tool must still leave.
             ProximityState::Out => {
                 tool.proximity_out(self, &tool::ProximityOutEvent { serial, time });
             }
