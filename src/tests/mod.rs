@@ -54,6 +54,7 @@ mod pinned_phantom;
 mod pointer_constraints;
 mod pointer_motion_dedup;
 mod popups;
+mod pull_cost;
 mod real_clients;
 mod relaunch;
 mod render_pixels;
