@@ -221,15 +221,13 @@ impl DriftWm {
         self.set_keyboard_focus(target, serial);
     }
 
-    /// Tear down the popup grab driftwm tracks: release smithay's popup grab,
-    /// drop the keyboard grab it took, and unset the pointer grab on an idle.
-    /// Deferred because a focus change can originate inside a PointerGrab's own
-    /// callback (PanGrab's click-on-empty-canvas moves focus from its button
-    /// handler), and PointerHandle holds a non-reentrant mutex across that
-    /// callback. Calling `unset_grab` inline would re-lock it on the same thread
-    /// and hang the compositor; the idle runs once dispatch unwinds and the lock
-    /// is free. Keyboard focus is not re-derived here: `update_keyboard_focus`
-    /// does that itself and the pull calls it after this.
+    /// Release the popup grab driftwm tracks, and the keyboard grab it took;
+    /// the pointer ungrab is deferred to an idle because a focus change can
+    /// originate inside a PointerGrab's own callback (PanGrab's
+    /// click-on-empty-canvas moves focus from its button handler), and
+    /// PointerHandle holds a non-reentrant mutex across that callback — an
+    /// inline `unset_grab` would re-lock it on the same thread and hang the
+    /// compositor. Keyboard focus is left to the caller to re-derive.
     pub(crate) fn tear_down_popup_grab(&mut self) {
         let Some(mut g) = self.popup_grab.take() else {
             return;

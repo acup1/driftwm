@@ -192,7 +192,6 @@ pub fn init_winit(
 
             data.tick_window_animations(dt);
 
-            // --- Pointer focus pull (after input + animations) ---
             data.refresh_pointer_focus();
 
             // --- Exec loading cursor timeout ---

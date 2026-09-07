@@ -387,8 +387,6 @@ fn a_confined_cursor_panned_by_warp_gets_the_corrected_point_on_the_next_pull() 
         "...paired with exactly one frame"
     );
 
-    // The unrelated scene change every earlier re-seat followed — a layer
-    // teardown — has nothing new to say now.
     let trigger = map_top_layer(
         &mut f,
         id,

@@ -463,8 +463,6 @@ impl<W: StageElement> Stage<W> {
         }
     }
 
-    /// Record, or clear, the pre-entry size the fullscreen window on `output`
-    /// is still committing at (see [`FullscreenEntry::awaiting_size`]).
     pub fn set_fullscreen_awaiting_size(&mut self, output: &str, size: Option<Size<i32, Logical>>) {
         if let Some(entry) = self.fullscreen.get_mut(output) {
             entry.awaiting_size = size;

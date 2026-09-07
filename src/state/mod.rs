@@ -1248,12 +1248,11 @@ impl DriftWm {
 
 impl DriftWm {
     /// The per-iteration duties shared by the main loop and the test server
-    /// pump, so the two can't drift apart: cull dead windows and refresh output
-    /// membership even on idle (no-render) turns, reveal deferred adoptions,
-    /// re-pick pointer focus, then flush. The adoption sweep sits behind
-    /// `retain_alive` on purpose — it adopts by stage lookup, and a window whose
-    /// client died in this iteration's dispatch must be gone first — and ahead
-    /// of the pull, so a reveal is re-seated in the iteration that made it.
+    /// pump, so the two can't drift apart; runs even on idle (no-render) turns.
+    /// The adoption sweep sits behind `retain_alive` on purpose — it adopts by
+    /// stage lookup, and a window whose client died in this iteration's
+    /// dispatch must be gone first — and ahead of the pull, so a reveal is
+    /// re-seated in the iteration that made it.
     pub fn refresh_and_flush_clients(&mut self) {
         self.stage.retain_alive();
         // Prune animation entries whose window left the stage — covers crash

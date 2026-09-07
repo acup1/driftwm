@@ -1,14 +1,12 @@
 //! `DriftWm::refresh_pointer_focus` runs once per iteration from
-//! `refresh_and_flush_clients` — every fixture pump is a pull — instead of
-//! from fifteen scene-change call sites. Coverage scenarios below are misses
-//! the old push world had (a popup or layer mapping under a stationary
-//! cursor, a compositor-side move shoving a neighbour or nudging a window);
-//! contract scenarios pin the three rules that keep a naive per-iteration
-//! recompute honest: never dispatch through a grab that supplies its own
-//! focus (except smithay's live popup grab), never re-seat a lock whose
-//! target is unchanged, and still re-evaluate a constraint on every pull even
-//! when nothing is delivered. See `dev/docs/caveats.md`, "Pointer focus is
-//! pulled once per iteration, never pushed".
+//! `refresh_and_flush_clients`, so every fixture pump is a pull. Coverage
+//! scenarios: a popup or layer mapping under a stationary cursor, a
+//! compositor-side move shoving a neighbour or nudging a window. Contract
+//! scenarios pin the rules that keep a per-iteration recompute honest: never
+//! dispatch through a grab that supplies its own focus (a live popup grab
+//! excepted), never re-seat a lock whose target is unchanged, and re-evaluate
+//! a constraint on every pull even when nothing is delivered. Design notes in
+//! `dev/docs/caveats.md`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -39,12 +37,10 @@ use super::{
 };
 
 /// Map a parent window, park a stationary cursor where the default
-/// positioner's popup will land (centered on the parent's top-left corner —
-/// see `overhanging_popup_keeps_parent_hit_testable` in `popups.rs`), take a
-/// real press+release over the parent for a serial, then open a popup there
-/// and grab it. Returns the parent window, its stage position, the cursor,
-/// and the popup's client surface. Asserts the popup already owns pointer
-/// focus, and that its client was handed a position.
+/// positioner's popup will land (centred on the parent's top-left corner),
+/// take a real press+release over the parent for a serial, then open a popup
+/// there and grab it. Returns the parent window, its stage position, the
+/// cursor, and the popup's client surface.
 fn setup_grabbed_popup_over_stationary_cursor(
     f: &mut Fixture,
     id: ClientId,
@@ -88,9 +84,8 @@ fn setup_grabbed_popup_over_stationary_cursor(
     f.double_roundtrip(id);
 
     // A freshly mapped popup's input region is a single logical pixel until
-    // its viewport destination is set (see `Popup::set_size`'s doc comment):
-    // grow it to the positioner's own size, which the default centers on the
-    // cursor above.
+    // its viewport destination is set: grow it to the positioner's own size,
+    // which the default centres on the cursor above.
     super::popups::grow_popup(f, id, &popup_surface, (200, 100));
 
     let popup_server = first_popup_surface(&server_surface(&parent_window)).unwrap();
@@ -147,12 +142,9 @@ fn a_grabbed_popup_mapping_under_a_stationary_cursor_takes_pointer_focus_and_han
 const KEY_Z: u32 = 44;
 
 /// Dismissing a grabbing popup hands keyboard focus back to its parent. A
-/// popup grab moves keyboard focus onto the popup surface lazily, at the
-/// first key event it forwards through the grab (`PopupKeyboardGrab::input`
-/// in smithay re-seats focus on its current grab before dispatching the key —
-/// see `a_window_stays_focused_while_its_popup_holds_the_keyboard` in
-/// `opacity.rs`); tearing the dead grab down before another key event arrives
-/// restores nothing on its own, so the pull has to re-derive focus.
+/// popup grab seats keyboard focus on the popup lazily, at the first key it
+/// forwards, so the test presses one first; tearing the dead grab down
+/// restores nothing on its own, and the pull has to re-derive focus.
 #[test]
 fn dismissing_a_grabbing_popup_hands_keyboard_focus_back_to_its_parent() {
     let mut f = Fixture::new();
@@ -174,9 +166,7 @@ fn dismissing_a_grabbing_popup_hands_keyboard_focus_back_to_its_parent() {
     );
 
     f.client(id).popup(&popup_surface).destroy();
-    // Mirrors the pointer-focus scenario above: the destroy's own pull tears
-    // the dead grab down, and the idle's restore motion lands on the pull
-    // after that.
+    // The ungrab idle fires after the destroy's own pull; see above.
     f.double_roundtrip(id);
     f.pump(3);
 
@@ -540,10 +530,8 @@ fn a_layer_surface_mapping_under_a_stationary_cursor_gets_enter_and_a_click_grab
     f.double_roundtrip(id);
 }
 
-/// A test-local `PointerGrab` that counts every `motion` call it receives —
-/// the minimal shape of `crate::grabs::screen_space_click::ScreenSpaceClickGrab`,
-/// standing in for "any grab that supplies its own focus and does work in
-/// `motion`".
+/// A `PointerGrab` that counts every `motion` it receives, standing in for
+/// any grab that supplies its own focus and does work in `motion`.
 struct CountingGrab {
     start_data: GrabStartData<DriftWm>,
     motions: Arc<AtomicUsize>,
@@ -694,7 +682,6 @@ fn a_persistent_confine_arms_once_its_region_is_reset_around_the_parked_cursor()
     pointer_to(&mut f, &device, cursor);
     f.roundtrip(id);
 
-    // A region well clear of the parked cursor: the confine must start inactive.
     let confine = f
         .client(id)
         .confine_pointer_with_region(&surface, &[(700, 500, 50, 50)]);
@@ -706,8 +693,6 @@ fn a_persistent_confine_arms_once_its_region_is_reset_around_the_parked_cursor()
 
     let positions_before = f.client(id).state.pointer_positions.len();
 
-    // Re-set the region around the parked cursor and commit — the cursor
-    // itself never moves.
     f.client(id).set_confine_region(&confine, &[(0, 0, 50, 50)]);
     f.client(id).window(&surface).commit();
     f.roundtrip(id);
@@ -723,11 +708,10 @@ fn a_persistent_confine_arms_once_its_region_is_reset_around_the_parked_cursor()
     );
 }
 
-/// A click-drag that stays over the same window it started on: smithay's
-/// implicit `ClickGrab` keeps delivering to that window at `under`'s origin
-/// for as long as the cursor stays over it, so the pull's delivery record
-/// must already match what the client was handed — releasing leaves nothing
-/// new to send.
+/// A click-drag that stays over the window it started on: smithay's implicit
+/// `ClickGrab` keeps delivering to that window at `under`'s origin, so the
+/// delivery record must already match what the client was handed — releasing
+/// leaves nothing new to send.
 #[test]
 fn a_drag_inside_a_window_leaves_nothing_for_the_pull_to_send_at_release() {
     let mut f = Fixture::new();
@@ -765,8 +749,7 @@ fn a_drag_inside_a_window_leaves_nothing_for_the_pull_to_send_at_release() {
          smithay's implicit click grab"
     );
 
-    // Two motions while the drag stays over the same window — the client has
-    // now received the enter and both of these.
+    // The client has received the enter and both of these.
     pointer_to_screen(&mut f, &device, start + Point::from((5.0, 0.0)));
     pointer_to_screen(&mut f, &device, start + Point::from((10.0, 0.0)));
     f.roundtrip(id);

@@ -422,9 +422,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Expire suspend / real-close marks a refused close left behind, and
         // garbage-collect pending relaunches past their deadline. The fixture
         // drives these with an injected `now`; production uses the wall clock
-        // here (the only wall-clock read for these deadlines). Before the
-        // shared refresh, whose adoption sweep then reveals a deferral whose
-        // deadline just passed on the same tick rather than the next one.
+        // here (the only wall-clock read for these deadlines). Ahead of the
+        // shared refresh, so its adoption sweep reveals a deferral whose
+        // deadline just passed on this tick rather than the next.
         let now = std::time::Instant::now();
         data.sweep_marks(now);
         data.sweep_pending_relaunches(now);

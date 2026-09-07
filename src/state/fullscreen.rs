@@ -189,8 +189,6 @@ impl DriftWm {
 
         self.stage
             .set_fullscreen(&output.name(), window.clone(), saved_location, saved_size);
-        // Until the client answers the offer with a commit, its committed rect
-        // is the old size at the parked position; the pull holds off it.
         if window.geometry().size != viewport_size {
             self.stage
                 .set_fullscreen_awaiting_size(&output.name(), Some(window.geometry().size));
@@ -615,8 +613,7 @@ impl DriftWm {
             return;
         }
         let owes = super::owes_a_configured_size(window);
-        // The client has answered the offer with a size of its own, at any
-        // size: the pull may hit-test the window from here.
+        // Answered, at whatever size: the pull may hit-test the window again.
         if awaiting && !owes {
             self.stage
                 .set_fullscreen_awaiting_size(&output.name(), None);

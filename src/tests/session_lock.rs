@@ -1015,7 +1015,7 @@ fn enter_fullscreen_while_locked_does_not_focus_the_pointer_on_the_window() {
     );
 }
 
-/// The pull after `unlock()` must re-seat pointer focus without the pointer moving — the
+/// The pull after `unlock()` must re-seat pointer focus with no motion — the
 /// first click after unlocking has to reach the window under the cursor, not
 /// wait for a motion event to notice it's there.
 #[test]

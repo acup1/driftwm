@@ -161,7 +161,7 @@ impl DriftWm {
 
     /// Whether the cursor currently sits over `surface`. Pointer focus alone
     /// can't answer that: [`Self::warp_pointer`] deactivates a constraint
-    /// without re-seating focus (the pull at the end of the iteration does that), so between the
+    /// without re-seating focus (the pull does that later), so between the
     /// two the focused surface is one the cursor has already left.
     pub(crate) fn cursor_over_surface(&self, surface: &WlSurface) -> bool {
         let pointer = self.seat.get_pointer().unwrap();
@@ -177,8 +177,7 @@ impl DriftWm {
     /// off this motion and needs every event, so send synchronously. Otherwise
     /// the cursor is free over a sliding canvas: update the internal location
     /// now (hit-testing stays correct) and leave the client-facing motion to the
-    /// pull, once per iteration and once per frame right after the animation
-    /// tick, which coalesces a pan's stream to one motion per frame.
+    /// pull, which coalesces a pan's stream to one motion per frame.
     pub(crate) fn warp_pointer(&mut self, new_pos: Point<f64, Logical>) {
         // `new_pos` is canvas-space, but a locked session keeps screen coords in
         // `current_location` (the invariant `SessionLockHandler::lock` sets up),

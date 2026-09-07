@@ -233,8 +233,8 @@ pub(crate) fn render_if_needed(data: &mut DriftWm) {
     // 1. Tick animations once for all outputs (before device borrow)
     data.tick_all_animations();
 
-    // Re-pick pointer focus after the tick, so a camera warp's carried motion and
-    // any cursor change it implies go into this frame.
+    // After the tick, so a camera warp's motion and any cursor change it
+    // implies go into this frame.
     data.refresh_pointer_focus();
 
     let mut dev = device.0.borrow_mut();
