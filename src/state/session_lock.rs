@@ -167,7 +167,7 @@ impl DriftWm {
         let pointer = self.seat.get_pointer().unwrap();
         let location = pointer.current_location();
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-        let time = self.start_time.elapsed().as_millis() as u32;
+        let time = crate::input::monotonic_msec();
         self.dispatch_pointer_motion(None, location, serial, time);
         pointer.frame(self);
         self.set_keyboard_focus(None, smithay::utils::SERIAL_COUNTER.next_serial());

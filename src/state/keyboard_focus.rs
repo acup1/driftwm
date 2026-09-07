@@ -5,8 +5,9 @@
 //! `focus.rs` is the type half ([`FocusTarget`] and its smithay trait impls);
 //! this is the decision half.
 
-use smithay::desktop::{PopupUngrabStrategy, Window};
+use smithay::desktop::{PopupPointerGrab, PopupUngrabStrategy, Window};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::SERIAL_COUNTER;
 use smithay::wayland::seat::WaylandFocus;
 
 use driftwm::window_ext::WindowExt;
@@ -204,7 +205,7 @@ impl DriftWm {
             .as_ref()
             .is_some_and(|g| g.has_keyboard_grab && target.as_ref().map(|t| &t.0) != Some(&g.root));
         if leaving_grab_root {
-            self.tear_down_popup_grab(serial);
+            self.tear_down_popup_grab();
         }
 
         // Focus staying on the grab root: a live grab keeps ownership (it rejects
@@ -227,23 +228,27 @@ impl DriftWm {
     /// handler), and PointerHandle holds a non-reentrant mutex across that
     /// callback. Calling `unset_grab` inline would re-lock it on the same thread
     /// and hang the compositor; the idle runs once dispatch unwinds and the lock
-    /// is free. Whatever owns the pointer by then — the popup grab on the
-    /// keyboard path or the drag grab itself on the mouse path — has finished
-    /// interacting, so ending it is harmless.
-    pub(crate) fn tear_down_popup_grab(&mut self, serial: smithay::utils::Serial) {
+    /// is free. Keyboard focus is not re-derived here: `update_keyboard_focus`
+    /// does that itself and the pull calls it after this.
+    pub(crate) fn tear_down_popup_grab(&mut self) {
         let Some(mut g) = self.popup_grab.take() else {
             return;
         };
         g.grab.ungrab(PopupUngrabStrategy::All);
-        let time = self.start_time.elapsed().as_millis() as u32;
         if g.has_keyboard_grab {
             self.seat.get_keyboard().unwrap().unset_grab(self);
         }
         self.loop_handle.insert_idle(move |data| {
-            data.seat
-                .get_pointer()
-                .unwrap()
-                .unset_grab(data, serial, time);
+            // A whole dispatch can run before this fires and install a grab of
+            // its own — a drag, a new menu — and that one is not ours to end.
+            let pointer = data.seat.get_pointer().unwrap();
+            let still_the_dead_popup_grab = data.popup_grab.is_none()
+                && pointer.with_grab(|_, grab| grab.is::<PopupPointerGrab<DriftWm>>())
+                    == Some(true);
+            if still_the_dead_popup_grab {
+                let time = crate::input::monotonic_msec();
+                pointer.unset_grab(data, SERIAL_COUNTER.next_serial(), time);
+            }
         });
     }
 

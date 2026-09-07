@@ -605,16 +605,13 @@ impl DriftWm {
 
     /// Hand over a fullscreen / maximize the client asked for while its window
     /// was hidden and [`Self::queues_geometry_request`] queued instead of
-    /// applying. Fullscreen wins when a client asked for both. Reports whether
-    /// anything was queued, so a caller that has already taken pointer focus can
-    /// tell whether the window moved out from under it.
-    pub(crate) fn apply_queued_geometry_request(&mut self, root: &WlSurface) -> bool {
+    /// applying. Fullscreen wins when a client asked for both.
+    pub(crate) fn apply_queued_geometry_request(&mut self, root: &WlSurface) {
         let Some(window) = self.window_for_surface(root) else {
-            return false;
+            return;
         };
         let fullscreen = self.pending_fullscreen.remove(root);
         let fit = fullscreen.is_none() && self.pending_fit.remove(root);
-        let applied = fullscreen.is_some() || fit;
         if let Some(client_output) = fullscreen {
             let target = self.resolve_fullscreen_output(root, client_output);
             self.enter_fullscreen(&window, target);
@@ -630,7 +627,6 @@ impl DriftWm {
             self.settle_owed_adopt_rect(&window, root);
             self.decoration_fit(&window);
         }
-        applied
     }
 
     /// Pay off the stable snap rect an adopt is owing, at the rect the adopt put
@@ -692,7 +688,7 @@ impl DriftWm {
     }
 
     /// Queue the adoptions a grab held back for the moment the current dispatch
-    /// unwinds. The adopt re-seats pointer focus and a grab's teardown runs
+    /// unwinds. An adopt moves windows and focus, and a grab's teardown runs
     /// inside the pointer mutex, so it can't run inline from there. Called from
     /// every point a grab this stash can wait on releases: a move grab's disarm,
     /// and the commit that settles a client resize back to `ResizeState::Idle`.

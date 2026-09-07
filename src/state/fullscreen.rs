@@ -346,11 +346,11 @@ impl DriftWm {
             // configure yet, so a client that drops a CSD shadow inset on
             // fullscreen still has its old origin here. This dispatch exists to
             // move *focus* onto the fullscreen surface so a cursor lock can arm;
-            // the commit hook in `CompositorHandler::commit` is what corrects the
-            // coordinate once the client's geometry lands. Keep both.
+            // the pull corrects the coordinate once the client's geometry lands,
+            // holding off the transient rect until then. Keep both.
             let origin =
                 crate::input::window_origin_for_surface(self, &wl_surface).unwrap_or_default();
-            let time = self.start_time.elapsed().as_millis() as u32;
+            let time = crate::input::monotonic_msec();
             self.dispatch_pointer_motion(
                 Some((FocusTarget(wl_surface.into_owned()), origin)),
                 new_pos,
@@ -608,14 +608,22 @@ impl DriftWm {
         ));
         // `offset == stored` first: every commit of a fullscreen game reaches
         // here, and this settles all but the handful that move anything without
-        // paying for the pending-configure walk.
-        if offset == stored || super::owes_a_configured_size(window) {
+        // paying for the pending-configure walk — unless the entry is still
+        // waiting for the client's answer, which is what the walk tells.
+        let awaiting = entry.awaiting_size.is_some();
+        if offset == stored && !awaiting {
             return;
         }
-        // The client has answered the entry with a size of its own; the pull may
-        // hit-test it from here.
-        self.stage
-            .set_fullscreen_awaiting_size(&output.name(), None);
+        let owes = super::owes_a_configured_size(window);
+        // The client has answered the offer with a size of its own, at any
+        // size: the pull may hit-test the window from here.
+        if awaiting && !owes {
+            self.stage
+                .set_fullscreen_awaiting_size(&output.name(), None);
+        }
+        if offset == stored || owes {
+            return;
+        }
         let element = StageWindow::Client(window.clone());
         let Some(position) = self.stage.position_of(&element) else {
             return;

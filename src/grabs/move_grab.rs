@@ -462,8 +462,8 @@ impl PointerGrab<DriftWm> for MoveGrab {
         // / alt+drag / gesture / pinned moves never do, and resize grabs can't
         // be concurrent), so this restores only that case. A plain clear rather
         // than a call into PointerHandle, whose mutex may be held here: the
-        // pull's decoration pass runs in pick mode and recomputes
-        // Pointer/default from it.
+        // pull's decoration pass, which still runs while the pick affordance is
+        // latched, recomputes Pointer/default from it.
         data.cursor.grab_cursor = false;
     }
 

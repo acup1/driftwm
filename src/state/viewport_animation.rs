@@ -211,7 +211,7 @@ impl DriftWm {
         if pointer.is_grabbed() {
             let under = self.focus_under(new_pos);
             let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-            let time = self.start_time.elapsed().as_millis() as u32;
+            let time = crate::input::monotonic_msec();
             self.dispatch_pointer_motion(under, new_pos, serial, time);
             pointer.frame(self);
             return;
@@ -262,7 +262,7 @@ impl DriftWm {
         let Some(touch) = self.seat.get_touch() else {
             return false;
         };
-        let time = self.start_time.elapsed().as_millis() as u32;
+        let time = crate::input::monotonic_msec();
         touch.motion(
             self,
             None,
