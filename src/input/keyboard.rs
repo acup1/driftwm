@@ -34,6 +34,10 @@ impl DriftWm {
         let keycode = event.key_code();
         let keycode_u32: u32 = keycode.into();
 
+        // A virtual keyboard may have left the focused client on its own keymap.
+        let seat = self.seat.clone();
+        driftwm::protocols::virtual_keyboard::restore_seat_keymap(self, &seat);
+
         // When session is locked, only allow VT switching — forward everything else
         if self.session_lock.is_locked() {
             let keyboard = self.seat.get_keyboard().unwrap();

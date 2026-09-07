@@ -8,8 +8,8 @@
 //! (`DriftWm::touch_output_for_device`); the fake reports no libinput device,
 //! so resolution falls through to the config override or the first output.
 
+use smithay::input::tablet::TabletSeatTrait;
 use smithay::utils::{Logical, Point};
-use smithay::wayland::tablet_manager::TabletSeatTrait;
 
 use driftwm::config::BTN_LEFT;
 

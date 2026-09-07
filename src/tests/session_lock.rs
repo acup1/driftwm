@@ -1961,11 +1961,11 @@ fn a_live_lock_role_still_errors_on_a_commit_before_its_first_ack() {
 }
 
 /// The shape a destroyed role leaves — no pending configure and no ack — is
-/// also the shape of a role driftwm declined to configure: `new_surface`
-/// returns early for a client that does not hold the lock, and smithay's own
-/// initial configure is a no-op with no server-pending state behind it. That
-/// role is live, so its commits must still reach the client as real errors —
-/// which is the whole job of the gate's "driftwm configured this" half.
+/// also the shape of a role nobody configured: smithay never calls
+/// `new_surface` for a role created on a lock it has finished, and sends it no
+/// configure. That role is live, so its commits must still reach the client as
+/// real errors — which is the whole job of the gate's "driftwm configured
+/// this" half.
 #[test]
 fn a_lock_role_driftwm_declined_to_configure_still_errors_on_a_commit() {
     let mut f = Fixture::new();
@@ -2073,14 +2073,15 @@ fn a_lock_role_retaken_after_an_orphaned_commit_is_configured_and_validated_afre
 /// "driftwm configured this" is a verdict on the *role*, and a `wl_surface`
 /// outlives its roles — so the two can disagree. A lock screen that loses the
 /// session between one lock and the next brings its old surfaces to a lock
-/// driftwm refuses: the surface's previous role was configured, the role it
-/// takes now is declined and stays live and unconfigured forever, and its
-/// commits are real violations the client has to be told about. That is why the
-/// verdict is cleared as the new role is taken, above the early return that
-/// declines it — a reset placed after the return would never run on exactly the
-/// role that needs it.
+/// driftwm refuses. smithay never calls `new_surface` for a role created on a
+/// lock it has already finished, so the verdict reset at the top of
+/// `new_surface` cannot run for it: the neutraliser then finds a role nobody
+/// configured on a `wl_surface` driftwm configured once, reads it as an orphan
+/// of that earlier role, and defuses its commits. The refused client is not
+/// told, but nothing of its shows either — the role never becomes a lock
+/// surface, the session stays with the incumbent, and the client lives on.
 #[test]
-fn a_declined_lock_role_inherits_no_configured_verdict_from_the_role_before_it() {
+fn a_declined_lock_role_on_a_surface_configured_before_stays_dark() {
     let mut f = Fixture::new();
     // The incumbent's lock is still up at teardown, so `lock_surfaces` never
     // drains.
@@ -2110,15 +2111,24 @@ fn a_declined_lock_role_inherits_no_configured_verdict_from_the_role_before_it()
             .last_lock_surface()
             .configures_received
             .is_empty(),
-        "precondition: driftwm declined to configure the refused client's role"
+        "precondition: the refused client's role was never configured"
     );
 
     f.client(refused).last_lock_surface().commit();
-    expect_lock_surface_error(
-        &mut f,
-        refused,
-        ext_session_lock_surface_v1::Error::CommitBeforeFirstAck,
-        "a declined role must get smithay's real error even on a `wl_surface` \
-         whose previous role driftwm did configure",
+    f.double_roundtrip(refused);
+
+    assert!(
+        f.state().session_lock.is_locked(),
+        "the incumbent's lock must survive the refused client's commit"
+    );
+    assert_eq!(
+        f.state().lock_surfaces.len(),
+        1,
+        "the refused client's role must never become a lock surface"
+    );
+    map_window(&mut f, refused, "still-alive", (400, 300));
+    assert!(
+        window_by_app_id(&mut f, "still-alive").is_some(),
+        "the refused client survives its defused commit"
     );
 }

@@ -1,5 +1,4 @@
 use smithay::{
-    delegate_layer_shell,
     desktop::{self, PopupKind, layer_map_for_output},
     input::pointer::CursorImageStatus,
     reexports::wayland_server::{Resource, protocol::wl_output::WlOutput},
@@ -223,5 +222,3 @@ impl WlrLayerShellHandler for DriftWm {
         self.unconstrain_popup(&popup);
     }
 }
-
-delegate_layer_shell!(DriftWm);

@@ -1,6 +1,7 @@
 //! Compositor state constructor. Wires every smithay protocol state,
 //! creates the seat, and initializes all runtime bookkeeping fields.
 
+use driftwm::protocols::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::{
     desktop::{PopupManager, Space},
     input::{
@@ -41,7 +42,6 @@ use smithay::{
         single_pixel_buffer::SinglePixelBufferState,
         text_input::TextInputManagerState,
         viewporter::ViewporterState,
-        virtual_keyboard::VirtualKeyboardManagerState,
         xdg_activation::XdgActivationState,
         xdg_foreign::XdgForeignState,
     },

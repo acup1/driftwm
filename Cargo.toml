@@ -9,7 +9,9 @@ description = "A trackpad-first infinite canvas Wayland compositor"
 repository = "https://github.com/malbiruk/driftwm"
 
 [dependencies]
-smithay = { git = "https://github.com/Smithay/smithay.git", rev = "27af99ef492ab4d7dc5cd2e625374d2beb2772f7", default-features = false, features = [
+# Cargo.lock holds winit at 0.31.0-beta.2: this smithay rev does not build
+# against beta.3, which `^0.31.0-beta.2` otherwise resolves to.
+smithay = { git = "https://github.com/Smithay/smithay.git", rev = "4cf0b62028039661477d482ec4758b687d8f4392", default-features = false, features = [
     "backend_winit",
     "backend_udev",
     "backend_drm",
@@ -21,7 +23,7 @@ smithay = { git = "https://github.com/Smithay/smithay.git", rev = "27af99ef492ab
     "wayland_frontend",
     "desktop",
 ] }
-smithay-drm-extras = { git = "https://github.com/Smithay/smithay.git", rev = "27af99ef492ab4d7dc5cd2e625374d2beb2772f7" }
+smithay-drm-extras = { git = "https://github.com/Smithay/smithay.git", rev = "4cf0b62028039661477d482ec4758b687d8f4392" }
 libdisplay-info = "0.3.0"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 tiff = "0.11"
@@ -47,7 +49,7 @@ tracy-client = { version = "0.18.4", default-features = false, optional = true }
 proptest = "1"
 insta = "1.47.2"
 wayland-client = "0.31.14"
-wayland-protocols = { version = "0.32.12", features = ["client", "staging", "unstable"] }
+wayland-protocols = { version = "0.32.13", features = ["client", "staging", "unstable"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
 calloop-wayland-source = "0.4.1"
 

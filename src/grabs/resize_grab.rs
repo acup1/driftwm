@@ -12,7 +12,7 @@ use smithay::{
     },
     output::Output,
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
-    utils::{Logical, Point, Serial, Size},
+    utils::{Logical, Point, Size},
     wayland::{compositor::with_states, seat::WaylandFocus, shell::xdg::SurfaceCachedState},
 };
 
@@ -712,11 +712,10 @@ impl TouchGrab<DriftWm> for ResizeGrab {
         handle: &mut TouchInnerHandle<'_, DriftWm>,
         _focus: Option<(<DriftWm as SeatHandler>::TouchFocus, Point<f64, Logical>)>,
         event: &DownEvent,
-        seq: Serial,
     ) {
         // Extra fingers during a touch resize are ignored — single-window only.
         self.touch_slots += 1;
-        handle.down(data, None, event, seq);
+        handle.down(data, None, event);
     }
 
     fn up(
@@ -724,9 +723,8 @@ impl TouchGrab<DriftWm> for ResizeGrab {
         data: &mut DriftWm,
         handle: &mut TouchInnerHandle<'_, DriftWm>,
         event: &UpEvent,
-        seq: Serial,
     ) {
-        handle.up(data, event, seq);
+        handle.up(data, event);
         self.touch_slots = self.touch_slots.saturating_sub(1);
         // Keep the grab alive until every finger lifts so stray fingers don't
         // leak out of grab routing; `unset` finalizes the resize.
@@ -741,14 +739,13 @@ impl TouchGrab<DriftWm> for ResizeGrab {
         handle: &mut TouchInnerHandle<'_, DriftWm>,
         _focus: Option<(<DriftWm as SeatHandler>::TouchFocus, Point<f64, Logical>)>,
         event: &TouchMotionEvent,
-        seq: Serial,
     ) {
         if event.slot != self.touch_start.as_ref().expect("touch resize grab").slot {
-            handle.motion(data, None, event, seq);
+            handle.motion(data, None, event);
             return;
         }
         let Some(element) = self.target.resolve(&data.stage) else {
-            handle.motion(data, None, event, seq);
+            handle.motion(data, None, event);
             return;
         };
         if self.pinned_initial_screen_pos.is_some() {
@@ -762,34 +759,24 @@ impl TouchGrab<DriftWm> for ResizeGrab {
                     location: clamped,
                     time: event.time,
                 };
-                handle.motion(data, None, &clamped_event, seq);
+                handle.motion(data, None, &clamped_event);
             } else {
                 // Pinned targets are client-only at construction; keep the
                 // dead arm a pass-through rather than swallowing motion.
-                handle.motion(data, None, event, seq);
+                handle.motion(data, None, event);
             }
             return;
         }
         self.apply_resize(data, &element, event.location);
-        handle.motion(data, None, event, seq);
+        handle.motion(data, None, event);
     }
 
-    fn frame(
-        &mut self,
-        data: &mut DriftWm,
-        handle: &mut TouchInnerHandle<'_, DriftWm>,
-        seq: Serial,
-    ) {
-        handle.frame(data, seq);
+    fn frame(&mut self, data: &mut DriftWm, handle: &mut TouchInnerHandle<'_, DriftWm>) {
+        handle.frame(data);
     }
 
-    fn cancel(
-        &mut self,
-        data: &mut DriftWm,
-        handle: &mut TouchInnerHandle<'_, DriftWm>,
-        seq: Serial,
-    ) {
-        handle.cancel(data, seq);
+    fn cancel(&mut self, data: &mut DriftWm, handle: &mut TouchInnerHandle<'_, DriftWm>) {
+        handle.cancel(data);
         handle.unset_grab(self, data);
     }
 
@@ -798,9 +785,8 @@ impl TouchGrab<DriftWm> for ResizeGrab {
         data: &mut DriftWm,
         handle: &mut TouchInnerHandle<'_, DriftWm>,
         event: &ShapeEvent,
-        seq: Serial,
     ) {
-        handle.shape(data, event, seq);
+        handle.shape(data, event);
     }
 
     fn orientation(
@@ -808,9 +794,8 @@ impl TouchGrab<DriftWm> for ResizeGrab {
         data: &mut DriftWm,
         handle: &mut TouchInnerHandle<'_, DriftWm>,
         event: &OrientationEvent,
-        seq: Serial,
     ) {
-        handle.orientation(data, event, seq);
+        handle.orientation(data, event);
     }
 
     fn start_data(&self) -> &TouchGrabStartData<DriftWm> {

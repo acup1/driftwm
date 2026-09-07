@@ -6,7 +6,6 @@ use crate::state::{
 use crate::surface_tree::focus_belongs_to_toplevel;
 use driftwm::window_ext::WindowExt;
 use smithay::{
-    delegate_xdg_shell,
     desktop::{
         PopupKeyboardGrab, PopupKind, PopupPointerGrab, PopupUngrabStrategy, Window,
         find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
@@ -607,8 +606,6 @@ impl XdgShellHandler for DriftWm {
         pointer.set_grab(self, grab, serial, Focus::Clear);
     }
 }
-
-delegate_xdg_shell!(DriftWm);
 
 /// Validate that the pointer has an active grab starting on the given surface.
 /// Returns the `GrabStartData` if the button click that started the grab

@@ -331,7 +331,7 @@ impl DriftWm {
 
             // Deactivate any constraint on the old focused surface
             if let Some(old) = pointer.current_focus() {
-                deactivate_constraint(&old.0, &pointer);
+                deactivate_constraint(self, &old.0, &pointer);
             }
             // Surface origin, not the geometry origin the stage positions by:
             // smithay subtracts it to get surface-local coordinates.

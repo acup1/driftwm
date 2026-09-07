@@ -4,10 +4,10 @@ use smithay::{
         ProximityState, TabletToolButtonEvent, TabletToolEvent, TabletToolProximityEvent,
         TabletToolTipEvent, TabletToolTipState,
     },
+    input::tablet::{TabletDescriptor, TabletSeatTrait, tool},
     output::Output,
     reexports::input::Device as LibinputDevice,
     utils::SERIAL_COUNTER,
-    wayland::tablet_manager::{TabletDescriptor, TabletSeatTrait},
 };
 
 use crate::input::touch::{as_libinput_device, is_internal_output, physical_size_matches};
@@ -47,12 +47,26 @@ impl<I: InputBackend> PointerButtonEvent<I> for TabletTipButtonEvent<I> {
     }
 }
 
+/// The axes a tablet event reports as changed, in the frame smithay forwards.
+fn changed_axes<I: InputBackend>(event: &impl TabletToolEvent<I>) -> tool::AxisFrame {
+    tool::AxisFrame {
+        pressure: event.pressure_has_changed().then(|| event.pressure()),
+        distance: event.distance_has_changed().then(|| event.distance()),
+        tilt: event.tilt_has_changed().then(|| event.tilt()),
+        rotation: event.rotation_has_changed().then(|| event.rotation()),
+        slider: event.slider_has_changed().then(|| event.slider_position()),
+        wheel: event
+            .wheel_has_changed()
+            .then(|| (event.wheel_delta(), event.wheel_delta_discrete())),
+    }
+}
+
 impl DriftWm {
     pub fn on_device_added<I: InputBackend>(&mut self, device: &I::Device) {
         if device.has_capability(DeviceCapability::TabletTool) {
             let tablet_seat = self.seat.tablet_seat();
             let desc = TabletDescriptor::from(device);
-            tablet_seat.add_tablet::<Self>(&self.display_handle, &desc);
+            tablet_seat.add_wp_tablet(&self.display_handle, &desc);
         }
     }
 
@@ -102,34 +116,18 @@ impl DriftWm {
 
         // Forward native tablet events to supporting clients
         let tablet_seat = self.seat.tablet_seat();
-        let tablet = tablet_seat.get_tablet(&TabletDescriptor::from(&event.device()));
-        let tool = tablet_seat.get_tool(&event.tool());
-
-        if let (Some(tablet), Some(tool)) = (tablet, tool) {
-            if event.pressure_has_changed() {
-                tool.pressure(event.pressure());
-            }
-            if event.distance_has_changed() {
-                tool.distance(event.distance());
-            }
-            if event.tilt_has_changed() {
-                tool.tilt(event.tilt());
-            }
-            if event.slider_has_changed() {
-                tool.slider_position(event.slider_position());
-            }
-            if event.rotation_has_changed() {
-                tool.rotation(event.rotation());
-            }
-            if event.wheel_has_changed() {
-                tool.wheel(event.wheel_delta(), event.wheel_delta_discrete());
-            }
-
-            let wl_surface_and_pos = under
-                .as_ref()
-                .map(|(focus_target, relative_pos)| (focus_target.0.clone(), *relative_pos));
-
-            tool.motion(canvas_pos, wl_surface_and_pos, &tablet, serial, time);
+        if let Some(tool) = tablet_seat.get_tool(&event.tool()) {
+            tool.axis(self, changed_axes(&event));
+            tool.motion(
+                self,
+                under,
+                &tool::MotionEvent {
+                    location: canvas_pos,
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time,
+                },
+            );
+            tool.frame(self, time);
         }
     }
 
@@ -172,27 +170,32 @@ impl DriftWm {
 
         let tablet_seat = self.seat.tablet_seat();
         let display_handle = self.display_handle.clone();
-        let tool = tablet_seat.add_tool::<Self>(self, &display_handle, &event.tool());
-        let tablet = tablet_seat.get_tablet(&TabletDescriptor::from(&event.device()));
+        let tool = tablet_seat
+            .get_tool(&event.tool())
+            .unwrap_or_else(|| tablet_seat.add_wp_tool(self, &display_handle, &event.tool()));
+        let Some(tablet) = tablet_seat.get_tablet(&TabletDescriptor::from(&event.device())) else {
+            return;
+        };
 
-        if let Some(tablet) = tablet {
-            match event.state() {
-                ProximityState::In => {
-                    if let Some((focus_target, relative_pos)) = under {
-                        tool.proximity_in(
-                            canvas_pos,
-                            (focus_target.0, relative_pos),
-                            &tablet,
-                            serial,
-                            time,
-                        );
-                    }
-                }
-                ProximityState::Out => {
-                    tool.proximity_out(time);
-                }
+        match event.state() {
+            ProximityState::In => {
+                tool.proximity_in(
+                    self,
+                    under,
+                    tablet,
+                    &tool::ProximityInEvent {
+                        location: canvas_pos,
+                        axis: Some(changed_axes(&event)),
+                        serial,
+                        time,
+                    },
+                );
+            }
+            ProximityState::Out => {
+                tool.proximity_out(self, &tool::ProximityOutEvent { serial, time });
             }
         }
+        tool.frame(self, time);
     }
 
     pub fn on_tablet_tool_tip<I: InputBackend>(&mut self, event: I::TabletToolTipEvent) {
@@ -204,32 +207,39 @@ impl DriftWm {
         let button_state = match event.tip_state() {
             TabletToolTipState::Down => {
                 if let Some(tool) = &tool {
-                    tool.tip_down(serial, time);
+                    tool.down(self, &tool::DownEvent { serial, time });
                 }
                 ButtonState::Pressed
             }
             TabletToolTipState::Up => {
                 if let Some(tool) = &tool {
-                    tool.tip_up(time);
+                    tool.up(self, &tool::UpEvent { serial, time });
                 }
                 ButtonState::Released
             }
         };
+        if let Some(tool) = &tool {
+            tool.frame(self, time);
+        }
 
         self.on_pointer_button::<I, _>(TabletTipButtonEvent::new(event, button_state));
     }
 
     pub fn on_tablet_tool_button<I: InputBackend>(&mut self, event: I::TabletToolButtonEvent) {
         let tablet_seat = self.seat.tablet_seat();
-        let tool = tablet_seat.get_tool(&event.tool());
 
-        if let Some(tool) = tool {
+        if let Some(tool) = tablet_seat.get_tool(&event.tool()) {
+            let time = event.time_msec();
             tool.button(
-                event.button(),
-                event.button_state(),
-                SERIAL_COUNTER.next_serial(),
-                event.time_msec(),
+                self,
+                &tool::ButtonEvent {
+                    serial: SERIAL_COUNTER.next_serial(),
+                    button: event.button(),
+                    state: event.button_state(),
+                    time,
+                },
             );
+            tool.frame(self, time);
         }
     }
 

@@ -63,6 +63,7 @@ impl DriftWm {
                 new_config.keyboard_layout = self.config.keyboard_layout.clone();
             } else {
                 tracing::info!("Config reload: keyboard layout updated");
+                self.virtual_kb_bindings.seat_keymap_changed();
                 let mut mods = keyboard.modifier_state();
                 if mods.num_lock != num_lock {
                     mods.num_lock = num_lock;

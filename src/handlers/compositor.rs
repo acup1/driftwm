@@ -13,7 +13,6 @@ use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
 use smithay::wayland::session_lock::{LockSurfaceConfigure, LockSurfaceData, LockSurfaceState};
 use smithay::wayland::shell::wlr_layer::{Anchor, LayerSurfaceCachedState, LayerSurfaceData};
 use smithay::{
-    delegate_compositor, delegate_shm,
     reexports::{
         calloop::Interest,
         wayland_server::{Client, Resource, protocol::wl_buffer::WlBuffer},
@@ -1536,6 +1535,3 @@ impl ShmHandler for DriftWm {
         &self.shm_state
     }
 }
-
-delegate_compositor!(DriftWm);
-delegate_shm!(DriftWm);

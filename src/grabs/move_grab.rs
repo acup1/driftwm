@@ -10,7 +10,7 @@ use smithay::{
         },
     },
     output::Output,
-    utils::{Logical, Point, Serial},
+    utils::{Logical, Point},
 };
 
 use crate::state::{ClusterMember, DriftWm, StageWindow, output_logical_size, output_state};
@@ -644,11 +644,10 @@ impl TouchGrab<DriftWm> for MoveGrab {
         handle: &mut TouchInnerHandle<'_, DriftWm>,
         _focus: Option<(<DriftWm as SeatHandler>::TouchFocus, Point<f64, Logical>)>,
         event: &DownEvent,
-        seq: Serial,
     ) {
         // Extra fingers during a touch move are ignored — no cluster on touch.
         self.touch_slots += 1;
-        handle.down(data, None, event, seq);
+        handle.down(data, None, event);
     }
 
     fn up(
@@ -656,9 +655,8 @@ impl TouchGrab<DriftWm> for MoveGrab {
         data: &mut DriftWm,
         handle: &mut TouchInnerHandle<'_, DriftWm>,
         event: &UpEvent,
-        seq: Serial,
     ) {
-        handle.up(data, event, seq);
+        handle.up(data, event);
         self.touch_slots = self.touch_slots.saturating_sub(1);
         // The window follows the start finger; once it lifts the move is done,
         // but keep the grab until every finger lifts so stray fingers don't
@@ -685,10 +683,9 @@ impl TouchGrab<DriftWm> for MoveGrab {
         handle: &mut TouchInnerHandle<'_, DriftWm>,
         _focus: Option<(<DriftWm as SeatHandler>::TouchFocus, Point<f64, Logical>)>,
         event: &TouchMotionEvent,
-        seq: Serial,
     ) {
         if event.slot != self.touch_start.as_ref().expect("touch move grab").slot {
-            handle.motion(data, None, event, seq);
+            handle.motion(data, None, event);
             return;
         }
         // Same pass-through as the pointer path if the dragged element vanished
@@ -696,18 +693,18 @@ impl TouchGrab<DriftWm> for MoveGrab {
         let Some(element) = self.target.resolve(&data.stage) else {
             data.clear_edge_pan(&self.output);
             data.touch_state.edge_pan = None;
-            handle.motion(data, None, event, seq);
+            handle.motion(data, None, event);
             return;
         };
         // Pinned windows ignore the camera, so no edge-pan either.
         if let Some(grab_offset) = self.pinned_grab_offset {
             let output = self.output.clone();
             self.apply_pinned_move(data, &element, event.location, grab_offset, output);
-            handle.motion(data, None, event, seq);
+            handle.motion(data, None, event);
             return;
         }
         self.apply_move(data, &element, event.location);
-        handle.motion(data, None, event, seq);
+        handle.motion(data, None, event);
         // Drag the window to a screen edge and the canvas scrolls under it. The
         // animation loop re-drives this grab from the recorded finger position
         // as the camera pans (there's no pointer to warp on touch).
@@ -728,23 +725,13 @@ impl TouchGrab<DriftWm> for MoveGrab {
                 });
     }
 
-    fn frame(
-        &mut self,
-        data: &mut DriftWm,
-        handle: &mut TouchInnerHandle<'_, DriftWm>,
-        seq: Serial,
-    ) {
-        handle.frame(data, seq);
+    fn frame(&mut self, data: &mut DriftWm, handle: &mut TouchInnerHandle<'_, DriftWm>) {
+        handle.frame(data);
     }
 
-    fn cancel(
-        &mut self,
-        data: &mut DriftWm,
-        handle: &mut TouchInnerHandle<'_, DriftWm>,
-        seq: Serial,
-    ) {
+    fn cancel(&mut self, data: &mut DriftWm, handle: &mut TouchInnerHandle<'_, DriftWm>) {
         data.clear_edge_pan(&self.output);
-        handle.cancel(data, seq);
+        handle.cancel(data);
         handle.unset_grab(self, data);
     }
 
@@ -753,9 +740,8 @@ impl TouchGrab<DriftWm> for MoveGrab {
         data: &mut DriftWm,
         handle: &mut TouchInnerHandle<'_, DriftWm>,
         event: &ShapeEvent,
-        seq: Serial,
     ) {
-        handle.shape(data, event, seq);
+        handle.shape(data, event);
     }
 
     fn orientation(
@@ -763,9 +749,8 @@ impl TouchGrab<DriftWm> for MoveGrab {
         data: &mut DriftWm,
         handle: &mut TouchInnerHandle<'_, DriftWm>,
         event: &OrientationEvent,
-        seq: Serial,
     ) {
-        handle.orientation(data, event, seq);
+        handle.orientation(data, event);
     }
 
     fn start_data(&self) -> &TouchGrabStartData<DriftWm> {

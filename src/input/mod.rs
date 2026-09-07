@@ -717,7 +717,7 @@ impl DriftWm {
         let focus_changed = old_focus.as_ref().map(|f| &f.0) != new_focus.as_ref().map(|f| &f.0);
 
         if focus_changed && let Some(old) = &old_focus {
-            deactivate_constraint(&old.0, &pointer);
+            deactivate_constraint(self, &old.0, &pointer);
         }
 
         self.maybe_activate_pointer_constraint();

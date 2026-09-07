@@ -1,6 +1,5 @@
 use std::sync::{Arc, Mutex};
 
-use smithay::delegate_background_effect;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Rectangle};
 use smithay::wayland::background_effect::{
@@ -126,5 +125,3 @@ impl ExtBackgroundEffectHandler for DriftWm {
         mark_blur_region_pending_dirty(&wl_surface);
     }
 }
-
-delegate_background_effect!(DriftWm);

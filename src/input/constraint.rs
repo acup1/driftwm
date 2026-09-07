@@ -63,14 +63,20 @@ pub(crate) fn activate_constraint(surface: &WlSurface, pointer: &PointerHandle<D
 }
 
 /// No-op without an active constraint; smithay's `deactivate` is idempotent
-/// anyway.
-pub(crate) fn deactivate_constraint(surface: &WlSurface, pointer: &PointerHandle<DriftWm>) {
+/// anyway. It calls `PointerConstraintsHandler::remove_constraint` while still
+/// inside the closure, so that handler stays at its empty default: anything it
+/// did would run under the surface's lock.
+pub(crate) fn deactivate_constraint(
+    state: &mut DriftWm,
+    surface: &WlSurface,
+    pointer: &PointerHandle<DriftWm>,
+) {
     #[allow(clippy::disallowed_methods)] // the sanctioned closure: it only flips the flag
     with_pointer_constraint(surface, pointer, |constraint| {
         if let Some(constraint) = constraint
             && constraint.is_active()
         {
-            constraint.deactivate();
+            constraint.deactivate(state, surface, pointer);
         }
     });
 }

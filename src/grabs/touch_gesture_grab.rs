@@ -12,7 +12,7 @@ use smithay::{
     },
     output::Output,
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
-    utils::{Logical, Point, SERIAL_COUNTER, Serial, Size},
+    utils::{Logical, Point, SERIAL_COUNTER, Size},
 };
 
 use driftwm::canvas::{self, CanvasPos, ScreenPos, canvas_to_screen, screen_to_canvas};
@@ -160,18 +160,13 @@ impl TouchGestureGrab {
         data: &mut DriftWm,
         handle: &mut TouchInnerHandle<'_, DriftWm>,
         event: &MotionEvent,
-        seq: Serial,
     ) -> bool {
         match action {
-            ContinuousAction::MoveWindow => self.try_start_move(data, handle, event, seq, false),
-            ContinuousAction::MoveSnappedWindows => {
-                self.try_start_move(data, handle, event, seq, true)
-            }
-            ContinuousAction::ResizeWindow => {
-                self.try_start_resize(data, handle, event, seq, false)
-            }
+            ContinuousAction::MoveWindow => self.try_start_move(data, handle, event, false),
+            ContinuousAction::MoveSnappedWindows => self.try_start_move(data, handle, event, true),
+            ContinuousAction::ResizeWindow => self.try_start_resize(data, handle, event, false),
             ContinuousAction::ResizeWindowSnapped => {
-                self.try_start_resize(data, handle, event, seq, true)
+                self.try_start_resize(data, handle, event, true)
             }
             _ => false,
         }
@@ -185,7 +180,6 @@ impl TouchGestureGrab {
         data: &mut DriftWm,
         handle: &mut TouchInnerHandle<'_, DriftWm>,
         event: &MotionEvent,
-        seq: Serial,
         cluster: bool,
     ) -> bool {
         // Pinned windows sit above canvas content and drag in screen space;
@@ -210,7 +204,7 @@ impl TouchGestureGrab {
             let serial = SERIAL_COUNTER.next_serial();
             data.raise_and_focus(&window, serial);
             data.arm_interactive_move(&window);
-            handle.set_grab(self, data, seq, grab);
+            handle.set_grab(self, data, SERIAL_COUNTER.next_serial(), grab);
             return true;
         }
 
@@ -227,7 +221,7 @@ impl TouchGestureGrab {
         else {
             return false;
         };
-        handle.set_grab(self, data, seq, grab);
+        handle.set_grab(self, data, SERIAL_COUNTER.next_serial(), grab);
         true
     }
 
@@ -242,7 +236,6 @@ impl TouchGestureGrab {
         data: &mut DriftWm,
         handle: &mut TouchInnerHandle<'_, DriftWm>,
         event: &MotionEvent,
-        seq: Serial,
         snapped: bool,
     ) -> bool {
         // Use the live finger centroid with the live camera (not the landing
@@ -280,7 +273,7 @@ impl TouchGestureGrab {
             };
             let serial = SERIAL_COUNTER.next_serial();
             data.raise_and_focus(&window, serial);
-            handle.set_grab(self, data, seq, grab);
+            handle.set_grab(self, data, SERIAL_COUNTER.next_serial(), grab);
             return true;
         }
 
@@ -302,19 +295,14 @@ impl TouchGestureGrab {
         ) else {
             return false;
         };
-        handle.set_grab(self, data, seq, grab);
+        handle.set_grab(self, data, SERIAL_COUNTER.next_serial(), grab);
         true
     }
 
     /// Deliver the withheld events in order through the inner handle — inside
     /// grab dispatch the public `TouchHandle` would re-enter the grab and
     /// panic, and the inner handle forwards without re-processing.
-    fn flush_holdback_inner(
-        &self,
-        data: &mut DriftWm,
-        handle: &mut TouchInnerHandle<'_, DriftWm>,
-        seq: Serial,
-    ) {
+    fn flush_holdback_inner(&self, data: &mut DriftWm, handle: &mut TouchInnerHandle<'_, DriftWm>) {
         let Some(buffer) = data.touch_state.holdback.take() else {
             return;
         };
@@ -341,7 +329,6 @@ impl TouchGestureGrab {
                         serial: SERIAL_COUNTER.next_serial(),
                         time,
                     },
-                    seq,
                 ),
                 HeldTouchEvent::Motion {
                     slot,
@@ -355,7 +342,6 @@ impl TouchGestureGrab {
                         location,
                         time,
                     },
-                    seq,
                 ),
                 HeldTouchEvent::Up { slot, time } => handle.up(
                     data,
@@ -364,11 +350,10 @@ impl TouchGestureGrab {
                         serial: SERIAL_COUNTER.next_serial(),
                         time,
                     },
-                    seq,
                 ),
             }
         }
-        handle.frame(data, seq);
+        handle.frame(data);
     }
 
     /// Apply the recognizer's continuous-pan decision: scale the raw screen
@@ -457,10 +442,9 @@ impl TouchGrab<DriftWm> for TouchGestureGrab {
         handle: &mut TouchInnerHandle<'_, DriftWm>,
         focus: Option<(<DriftWm as SeatHandler>::TouchFocus, Point<f64, Logical>)>,
         event: &DownEvent,
-        seq: Serial,
     ) {
         if data.touch_state.replaying_holdback {
-            handle.down(data, focus, event, seq);
+            handle.down(data, focus, event);
             return;
         }
         let (camera, zoom) = self.camera_zoom();
@@ -496,8 +480,8 @@ impl TouchGrab<DriftWm> for TouchGestureGrab {
 
         for decision in decisions {
             match decision {
-                Decision::Forward => handle.down(data, focus.clone(), event, seq),
-                Decision::Consume => handle.down(data, None, event, seq),
+                Decision::Forward => handle.down(data, focus.clone(), event),
+                Decision::Consume => handle.down(data, None, event),
                 Decision::Hold => data.hold_touch_event(HeldTouchEvent::Down {
                     slot: event.slot,
                     focus: focus.clone(),
@@ -535,10 +519,9 @@ impl TouchGrab<DriftWm> for TouchGestureGrab {
                                 location,
                                 time: event.time,
                             },
-                            seq,
                         );
                     }
-                    handle.cancel(data, seq);
+                    handle.cancel(data);
                 }
                 // Stash the exiting window so a nav firing right after can still
                 // anchor to it. Uses the touch output, which may differ from the
@@ -559,10 +542,9 @@ impl TouchGrab<DriftWm> for TouchGestureGrab {
         data: &mut DriftWm,
         handle: &mut TouchInnerHandle<'_, DriftWm>,
         event: &UpEvent,
-        seq: Serial,
     ) {
         if data.touch_state.replaying_holdback {
-            handle.up(data, event, seq);
+            handle.up(data, event);
             return;
         }
 
@@ -581,12 +563,12 @@ impl TouchGrab<DriftWm> for TouchGestureGrab {
 
         for decision in decisions {
             match decision {
-                Decision::Forward => handle.up(data, event, seq),
+                Decision::Forward => handle.up(data, event),
                 Decision::Hold => data.hold_touch_event(HeldTouchEvent::Up {
                     slot: event.slot,
                     time: event.time,
                 }),
-                Decision::Flush => self.flush_holdback_inner(data, handle, seq),
+                Decision::Flush => self.flush_holdback_inner(data, handle),
                 Decision::Momentum => data.launch_momentum_on(&self.output),
                 Decision::Tap {
                     focus_at,
@@ -607,10 +589,9 @@ impl TouchGrab<DriftWm> for TouchGestureGrab {
         handle: &mut TouchInnerHandle<'_, DriftWm>,
         _focus: Option<(<DriftWm as SeatHandler>::TouchFocus, Point<f64, Logical>)>,
         event: &MotionEvent,
-        seq: Serial,
     ) {
         if data.touch_state.replaying_holdback {
-            handle.motion(data, None, event, seq);
+            handle.motion(data, None, event);
             return;
         }
         let (camera, zoom) = self.camera_zoom();
@@ -648,9 +629,9 @@ impl TouchGrab<DriftWm> for TouchGestureGrab {
                         location: forward_location,
                         time: event.time,
                     };
-                    handle.motion(data, stored_focus.clone(), &ev, seq);
+                    handle.motion(data, stored_focus.clone(), &ev);
                 }
-                Decision::Consume => handle.motion(data, None, event, seq),
+                Decision::Consume => handle.motion(data, None, event),
                 Decision::Hold => data.hold_touch_event(HeldTouchEvent::Motion {
                     slot: event.slot,
                     location: forward_location,
@@ -660,29 +641,19 @@ impl TouchGrab<DriftWm> for TouchGestureGrab {
                 Decision::Zoom { scale, anchor } => self.apply_zoom(data, scale, anchor),
                 Decision::FireThreshold(action) => data.execute_action(&action),
                 Decision::StartWindowGrab { action } => {
-                    self.start_window_grab(action, data, handle, event, seq);
+                    self.start_window_grab(action, data, handle, event);
                 }
                 other => unreachable!("unexpected decision from motion: {other:?}"),
             }
         }
     }
 
-    fn frame(
-        &mut self,
-        data: &mut DriftWm,
-        handle: &mut TouchInnerHandle<'_, DriftWm>,
-        seq: Serial,
-    ) {
-        handle.frame(data, seq);
+    fn frame(&mut self, data: &mut DriftWm, handle: &mut TouchInnerHandle<'_, DriftWm>) {
+        handle.frame(data);
     }
 
-    fn cancel(
-        &mut self,
-        data: &mut DriftWm,
-        handle: &mut TouchInnerHandle<'_, DriftWm>,
-        seq: Serial,
-    ) {
-        handle.cancel(data, seq);
+    fn cancel(&mut self, data: &mut DriftWm, handle: &mut TouchInnerHandle<'_, DriftWm>) {
+        handle.cancel(data);
         handle.unset_grab(self, data);
     }
 
@@ -691,9 +662,8 @@ impl TouchGrab<DriftWm> for TouchGestureGrab {
         data: &mut DriftWm,
         handle: &mut TouchInnerHandle<'_, DriftWm>,
         event: &ShapeEvent,
-        seq: Serial,
     ) {
-        handle.shape(data, event, seq);
+        handle.shape(data, event);
     }
 
     fn orientation(
@@ -701,9 +671,8 @@ impl TouchGrab<DriftWm> for TouchGestureGrab {
         data: &mut DriftWm,
         handle: &mut TouchInnerHandle<'_, DriftWm>,
         event: &OrientationEvent,
-        seq: Serial,
     ) {
-        handle.orientation(data, event, seq);
+        handle.orientation(data, event);
     }
 
     fn start_data(&self) -> &TouchGrabStartData<DriftWm> {

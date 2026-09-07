@@ -203,7 +203,7 @@ impl DriftWm {
                 return;
             }
             if let Some(focus) = pointer.current_focus() {
-                deactivate_constraint(&focus.0, &pointer);
+                deactivate_constraint(self, &focus.0, &pointer);
             }
         }
 

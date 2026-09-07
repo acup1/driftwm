@@ -7,7 +7,7 @@
 use std::borrow::Cow;
 
 use smithay::{
-    backend::input::KeyState,
+    backend::input::{KeyState, TabletToolDescriptor},
     desktop::PopupKind,
     input::{
         Seat, SeatHandler,
@@ -19,8 +19,9 @@ use smithay::{
             GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent, MotionEvent,
             PointerTarget, RelativeMotionEvent,
         },
+        tablet::{self, Tablet, tool::TabletToolTarget},
         touch::{
-            DownEvent as TouchDownEvent, MotionEvent as TouchMotionEvent, TouchTarget,
+            DownEvent as TouchDownEvent, FrameMarker, MotionEvent as TouchMotionEvent, TouchTarget,
             UpEvent as TouchUpEvent,
         },
     },
@@ -214,30 +215,24 @@ impl PointerTarget<DriftWm> for FocusTarget {
 }
 
 impl TouchTarget<DriftWm> for FocusTarget {
-    fn down(&self, seat: &Seat<DriftWm>, data: &mut DriftWm, event: &TouchDownEvent, seq: Serial) {
-        <WlSurface as TouchTarget<DriftWm>>::down(&self.0, seat, data, event, seq);
+    fn down(&self, seat: &Seat<DriftWm>, data: &mut DriftWm, event: &TouchDownEvent) {
+        <WlSurface as TouchTarget<DriftWm>>::down(&self.0, seat, data, event);
     }
 
-    fn up(&self, seat: &Seat<DriftWm>, data: &mut DriftWm, event: &TouchUpEvent, seq: Serial) {
-        <WlSurface as TouchTarget<DriftWm>>::up(&self.0, seat, data, event, seq);
+    fn up(&self, seat: &Seat<DriftWm>, data: &mut DriftWm, event: &TouchUpEvent) {
+        <WlSurface as TouchTarget<DriftWm>>::up(&self.0, seat, data, event);
     }
 
-    fn motion(
-        &self,
-        seat: &Seat<DriftWm>,
-        data: &mut DriftWm,
-        event: &TouchMotionEvent,
-        seq: Serial,
-    ) {
-        <WlSurface as TouchTarget<DriftWm>>::motion(&self.0, seat, data, event, seq);
+    fn motion(&self, seat: &Seat<DriftWm>, data: &mut DriftWm, event: &TouchMotionEvent) {
+        <WlSurface as TouchTarget<DriftWm>>::motion(&self.0, seat, data, event);
     }
 
-    fn frame(&self, seat: &Seat<DriftWm>, data: &mut DriftWm, seq: Serial) {
-        <WlSurface as TouchTarget<DriftWm>>::frame(&self.0, seat, data, seq);
+    fn frame(&self, seat: &Seat<DriftWm>, data: &mut DriftWm, marker: FrameMarker) {
+        <WlSurface as TouchTarget<DriftWm>>::frame(&self.0, seat, data, marker);
     }
 
-    fn cancel(&self, seat: &Seat<DriftWm>, data: &mut DriftWm, seq: Serial) {
-        <WlSurface as TouchTarget<DriftWm>>::cancel(&self.0, seat, data, seq);
+    fn cancel(&self, seat: &Seat<DriftWm>, data: &mut DriftWm, marker: FrameMarker) {
+        <WlSurface as TouchTarget<DriftWm>>::cancel(&self.0, seat, data, marker);
     }
 
     fn shape(
@@ -245,9 +240,8 @@ impl TouchTarget<DriftWm> for FocusTarget {
         seat: &Seat<DriftWm>,
         data: &mut DriftWm,
         event: &smithay::input::touch::ShapeEvent,
-        seq: Serial,
     ) {
-        <WlSurface as TouchTarget<DriftWm>>::shape(&self.0, seat, data, event, seq);
+        <WlSurface as TouchTarget<DriftWm>>::shape(&self.0, seat, data, event);
     }
 
     fn orientation(
@@ -255,9 +249,118 @@ impl TouchTarget<DriftWm> for FocusTarget {
         seat: &Seat<DriftWm>,
         data: &mut DriftWm,
         event: &smithay::input::touch::OrientationEvent,
-        seq: Serial,
     ) {
-        <WlSurface as TouchTarget<DriftWm>>::orientation(&self.0, seat, data, event, seq);
+        <WlSurface as TouchTarget<DriftWm>>::orientation(&self.0, seat, data, event);
+    }
+
+    fn last_frame(&self, seat: &Seat<DriftWm>, data: &mut DriftWm) -> Option<FrameMarker> {
+        <WlSurface as TouchTarget<DriftWm>>::last_frame(&self.0, seat, data)
+    }
+}
+
+impl TabletToolTarget<DriftWm> for FocusTarget {
+    fn proximity_in(
+        &self,
+        seat: &Seat<DriftWm>,
+        data: &mut DriftWm,
+        tool_descriptor: &TabletToolDescriptor,
+        tablet: &Tablet,
+        serial: Serial,
+    ) {
+        <WlSurface as TabletToolTarget<DriftWm>>::proximity_in(
+            &self.0,
+            seat,
+            data,
+            tool_descriptor,
+            tablet,
+            serial,
+        );
+    }
+
+    fn proximity_out(
+        &self,
+        seat: &Seat<DriftWm>,
+        data: &mut DriftWm,
+        tool_descriptor: &TabletToolDescriptor,
+    ) {
+        <WlSurface as TabletToolTarget<DriftWm>>::proximity_out(
+            &self.0,
+            seat,
+            data,
+            tool_descriptor,
+        );
+    }
+
+    fn down(
+        &self,
+        seat: &Seat<DriftWm>,
+        data: &mut DriftWm,
+        tool_descriptor: &TabletToolDescriptor,
+        event: &tablet::tool::DownEvent,
+    ) {
+        <WlSurface as TabletToolTarget<DriftWm>>::down(&self.0, seat, data, tool_descriptor, event);
+    }
+
+    fn up(
+        &self,
+        seat: &Seat<DriftWm>,
+        data: &mut DriftWm,
+        tool_descriptor: &TabletToolDescriptor,
+        event: &tablet::tool::UpEvent,
+    ) {
+        <WlSurface as TabletToolTarget<DriftWm>>::up(&self.0, seat, data, tool_descriptor, event);
+    }
+
+    fn motion(
+        &self,
+        seat: &Seat<DriftWm>,
+        data: &mut DriftWm,
+        tool_descriptor: &TabletToolDescriptor,
+        event: &tablet::tool::MotionEvent,
+    ) {
+        <WlSurface as TabletToolTarget<DriftWm>>::motion(
+            &self.0,
+            seat,
+            data,
+            tool_descriptor,
+            event,
+        );
+    }
+
+    fn axis(
+        &self,
+        seat: &Seat<DriftWm>,
+        data: &mut DriftWm,
+        tool_descriptor: &TabletToolDescriptor,
+        frame: tablet::tool::AxisFrame,
+    ) {
+        <WlSurface as TabletToolTarget<DriftWm>>::axis(&self.0, seat, data, tool_descriptor, frame);
+    }
+
+    fn button(
+        &self,
+        seat: &Seat<DriftWm>,
+        data: &mut DriftWm,
+        tool_descriptor: &TabletToolDescriptor,
+        event: &tablet::tool::ButtonEvent,
+    ) {
+        <WlSurface as TabletToolTarget<DriftWm>>::button(
+            &self.0,
+            seat,
+            data,
+            tool_descriptor,
+            event,
+        );
+    }
+
+    fn frame(
+        &self,
+        seat: &Seat<DriftWm>,
+        data: &mut DriftWm,
+        tool_descriptor: &TabletToolDescriptor,
+        time: u32,
+    ) {
+        <WlSurface as TabletToolTarget<DriftWm>>::frame(&self.0, seat, data, tool_descriptor, time);
     }
 }
 
