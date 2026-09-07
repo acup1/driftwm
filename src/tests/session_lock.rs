@@ -22,6 +22,7 @@ use smithay::utils::Point;
 use smithay::wayland::input_method::InputMethodKeyboardGrab;
 use smithay::wayland::session_lock::SessionLockHandler;
 use wayland_protocols::ext::session_lock::v1::client::ext_session_lock_surface_v1;
+use wayland_protocols::ext::session_lock::v1::client::ext_session_lock_v1;
 
 use crate::state::session_lock::PENDING_LOCK_DEADLINE;
 use crate::state::{SessionLock, StageWindow};
@@ -406,6 +407,72 @@ fn second_lock_is_refused_while_the_first_client_is_alive() {
         "the original client's lock surface must keep keyboard focus after a refused \
          takeover attempt"
     );
+}
+
+/// This pins a smithay behaviour from this bump's rev, not a driftwm mutation:
+/// before it, `ext_session_lock_v1.unlock_and_destroy` only checked a bare
+/// "is the session locked at all" flag and unconditionally called
+/// `state.unlock()` regardless, so a refused client's own unlock request ended
+/// the incumbent's session out from under it. Now the check is against the
+/// specific lock object holding `LockStatus::Locked`, and only that one may
+/// unlock.
+///
+/// Only the error code is checked, not the object interface or message:
+/// `unlock_and_destroy` is a wire destructor, so wayland-client has already
+/// dropped its local record of the object by the time the server's error
+/// event naming it comes back, and decodes it as the empty/zero placeholder
+/// rather than `ext_session_lock_v1`.
+#[test]
+fn a_refused_clients_unlock_and_destroy_cannot_unlock_the_session() {
+    let mut f = Fixture::new();
+    // The incumbent's lock stays up throughout, so `lock_surfaces` never drains.
+    f.skip_baseline_check();
+    let output = f.add_output(1, (1920, 1080));
+    let a = f.add_client();
+    let b = f.add_client();
+
+    f.client(a).lock_session();
+    f.roundtrip(a);
+    let a_surface = confirm_lock(&mut f, a, &output);
+
+    f.client(b).lock_session();
+    f.roundtrip(b);
+    assert_eq!(
+        f.client(b).lock_events(),
+        &[LockEvent::Finished],
+        "precondition: b's lock request was refused while a's is alive"
+    );
+
+    f.client(b).unlock_session();
+    f.client(b).flush();
+    f.pump(10);
+
+    assert!(
+        f.state().session_lock.is_locked(),
+        "a refused client's unlock_and_destroy must not end a session it never won"
+    );
+    assert_eq!(
+        f.state()
+            .lock_surfaces
+            .get(&output)
+            .unwrap()
+            .wl_surface()
+            .clone(),
+        a_surface,
+        "the incumbent's lock surface must survive a refused client's unlock attempt"
+    );
+
+    let error = f
+        .client(b)
+        .protocol_error()
+        .expect("a refused client's unlock_and_destroy must be a protocol error");
+    assert_eq!(
+        error.code,
+        ext_session_lock_v1::Error::InvalidUnlock as u32,
+        "wrong error code"
+    );
+
+    f.kill_client(b);
 }
 
 /// The crash-recovery path: a locking client dying must not permanently wedge

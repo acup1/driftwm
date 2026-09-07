@@ -9,6 +9,7 @@ use std::fmt;
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
+use std::os::unix::fs::FileExt as _;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -24,6 +25,7 @@ use wayland_client::protocol::wl_buffer::{self, WlBuffer};
 use wayland_client::protocol::wl_callback::{self, WlCallback};
 use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_client::protocol::wl_display::WlDisplay;
+use wayland_client::protocol::wl_keyboard::{self, WlKeyboard};
 use wayland_client::protocol::wl_output::{self, WlOutput};
 use wayland_client::protocol::wl_pointer::{self, WlPointer};
 use wayland_client::protocol::wl_region::WlRegion;
@@ -67,6 +69,8 @@ use wayland_protocols::xdg::shell::client::xdg_positioner::{
 use wayland_protocols::xdg::shell::client::xdg_surface::{self, XdgSurface};
 use wayland_protocols::xdg::shell::client::xdg_toplevel::{self, XdgToplevel};
 use wayland_protocols::xdg::shell::client::xdg_wm_base::{self, XdgWmBase};
+use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1;
+use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::{self, ZwlrLayerShellV1};
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::{
     self, ZwlrLayerSurfaceV1,
@@ -102,9 +106,12 @@ pub struct State {
     pub touch: Option<WlTouch>,
     /// Bound alongside the seat, for the same reason as `touch`.
     pub pointer: Option<WlPointer>,
+    /// Bound alongside the seat, for the same reason as `touch`.
+    pub keyboard: Option<WlKeyboard>,
     pub pointer_constraints: Option<ZwpPointerConstraintsV1>,
     pub xdg_activation: Option<XdgActivationV1>,
     pub ext_session_lock_manager: Option<ExtSessionLockManagerV1>,
+    pub virtual_keyboard_manager: Option<ZwpVirtualKeyboardManagerV1>,
 
     pub windows: Vec<Window>,
     pub layers: Vec<LayerSurface>,
@@ -128,6 +135,10 @@ pub struct State {
     /// received, oldest first. A scroll a compositor binding consumed sends a
     /// bare frame with no axis inside it, so this stays empty for one.
     pub pointer_axes: Vec<f64>,
+    /// Every `wl_keyboard` event this client's keyboard has received, oldest
+    /// first — shared by the physical and virtual-keyboard paths, so a
+    /// scenario can tell exactly which one delivered what.
+    pub keyboard_events: Vec<KeyboardEvent>,
 
     /// The token string from the most recent `xdg_activation_token_v1.done`.
     pub activation_token: Option<String>,
@@ -287,6 +298,22 @@ pub enum TouchEvent {
     Cancel,
 }
 
+/// A `wl_keyboard` event this client's keyboard has received, kept generic so
+/// any scenario driving either the physical or the virtual-keyboard path can
+/// use it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyboardEvent {
+    /// The keymap text read out of the event's fd.
+    Keymap(String),
+    Key {
+        key: u32,
+        state: u32,
+    },
+    Modifiers {
+        mods_depressed: u32,
+    },
+}
+
 pub struct LockSurface {
     pub qh: QueueHandle<State>,
     pub spbm: WpSinglePixelBufferManagerV1,
@@ -439,9 +466,11 @@ impl Client {
             seat: None,
             touch: None,
             pointer: None,
+            keyboard: None,
             pointer_constraints: None,
             xdg_activation: None,
             ext_session_lock_manager: None,
+            virtual_keyboard_manager: None,
             windows: Vec::new(),
             layers: Vec::new(),
             popups: Vec::new(),
@@ -451,6 +480,7 @@ impl Client {
             pointer_frames: 0,
             pointer_buttons: Vec::new(),
             pointer_axes: Vec::new(),
+            keyboard_events: Vec::new(),
             activation_token: None,
             ext_workspace: ExtWorkspace::default(),
         };
@@ -727,6 +757,74 @@ impl Client {
     /// [`Lock`] — the handle back to one a helper made on the caller's behalf.
     pub fn last_lock_surface(&mut self) -> &mut LockSurface {
         self.state.last_lock_surface()
+    }
+
+    /// Every `wl_keyboard` event this client's keyboard has received so far,
+    /// oldest first. Does not clear the log — see [`Self::drain_keyboard_events`]
+    /// for that.
+    pub fn keyboard_events(&self) -> &[KeyboardEvent] {
+        &self.state.keyboard_events
+    }
+
+    /// Take the recorded `wl_keyboard` events, leaving the log empty — for
+    /// clearing incidental noise (the initial bind, an unrelated focus change)
+    /// before driving the interaction a scenario actually cares about.
+    pub fn drain_keyboard_events(&mut self) -> Vec<KeyboardEvent> {
+        std::mem::take(&mut self.state.keyboard_events)
+    }
+
+    /// `zwp_virtual_keyboard_manager_v1.create_virtual_keyboard` on this
+    /// client's seat.
+    pub fn create_virtual_keyboard(&mut self) -> ZwpVirtualKeyboardV1 {
+        let manager = self.state.virtual_keyboard_manager.as_ref().unwrap();
+        let seat = self.state.seat.as_ref().unwrap();
+        let keyboard = manager.create_virtual_keyboard(seat, &self.qh, ());
+        self.connection.flush().unwrap();
+        keyboard
+    }
+
+    /// Upload `text` as `keyboard`'s XKB keymap (`zwp_virtual_keyboard_v1.keymap`)
+    /// through a temp file, the way a real on-screen keyboard hands over its
+    /// compiled keymap — flushed immediately, since the fd must still be open
+    /// when the message is written to the wire.
+    pub fn virtual_keyboard_keymap(&mut self, keyboard: &ZwpVirtualKeyboardV1, text: &str) {
+        let file = shm_file(text.as_bytes());
+        keyboard.keymap(
+            wl_keyboard::KeymapFormat::XkbV1 as u32,
+            file.as_fd(),
+            text.len() as u32,
+        );
+        self.connection.flush().unwrap();
+    }
+
+    /// `zwp_virtual_keyboard_v1.key`. `pressed` is the physical key state: `true`
+    /// for a press, `false` for a release.
+    pub fn virtual_keyboard_key(
+        &mut self,
+        keyboard: &ZwpVirtualKeyboardV1,
+        time: u32,
+        key: u32,
+        pressed: bool,
+    ) {
+        keyboard.key(time, key, pressed as u32);
+        self.connection.flush().unwrap();
+    }
+
+    /// `zwp_virtual_keyboard_v1.modifiers`, with only the depressed mask set —
+    /// no scenario here needs latched, locked, or a non-zero group.
+    pub fn virtual_keyboard_modifiers(
+        &mut self,
+        keyboard: &ZwpVirtualKeyboardV1,
+        mods_depressed: u32,
+    ) {
+        keyboard.modifiers(mods_depressed, 0, 0, 0);
+        self.connection.flush().unwrap();
+    }
+
+    /// `zwp_virtual_keyboard_v1.destroy`.
+    pub fn virtual_keyboard_destroy(&mut self, keyboard: &ZwpVirtualKeyboardV1) {
+        keyboard.destroy();
+        self.connection.flush().unwrap();
     }
 }
 
@@ -1559,6 +1657,7 @@ impl Dispatch<WlRegistry, ()> for State {
                     let seat: WlSeat = registry.bind(name, version, qh, ());
                     state.touch = Some(seat.get_touch(qh, ()));
                     state.pointer = Some(seat.get_pointer(qh, ()));
+                    state.keyboard = Some(seat.get_keyboard(qh, ()));
                     state.seat = Some(seat);
                 } else if interface == ZwpPointerConstraintsV1::interface().name {
                     let version = min(version, ZwpPointerConstraintsV1::interface().version);
@@ -1576,6 +1675,9 @@ impl Dispatch<WlRegistry, ()> for State {
                 } else if interface == ExtSessionLockManagerV1::interface().name {
                     let version = min(version, ExtSessionLockManagerV1::interface().version);
                     state.ext_session_lock_manager = Some(registry.bind(name, version, qh, ()));
+                } else if interface == ZwpVirtualKeyboardManagerV1::interface().name {
+                    let version = min(version, ZwpVirtualKeyboardManagerV1::interface().version);
+                    state.virtual_keyboard_manager = Some(registry.bind(name, version, qh, ()));
                 }
 
                 let global = Global {
@@ -2060,6 +2162,42 @@ impl Dispatch<WlPointer, ()> for State {
     }
 }
 
+impl Dispatch<WlKeyboard, ()> for State {
+    fn event(
+        state: &mut Self,
+        _proxy: &WlKeyboard,
+        event: <WlKeyboard as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_keyboard::Event::Keymap { fd, size, .. } => {
+                let file = std::fs::File::from(fd);
+                let mut buf = vec![0u8; size as usize];
+                file.read_exact_at(&mut buf, 0).expect("read keymap fd");
+                // Matches `track_keymap`'s own NUL handling: older clients get a
+                // NUL-terminated string, newer ones need not bother.
+                let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                let text = String::from_utf8(buf[..len].to_vec()).expect("keymap must be UTF-8");
+                state.keyboard_events.push(KeyboardEvent::Keymap(text));
+            }
+            wl_keyboard::Event::Key { key, state: s, .. } => {
+                state.keyboard_events.push(KeyboardEvent::Key {
+                    key,
+                    state: u32::from(s),
+                });
+            }
+            wl_keyboard::Event::Modifiers { mods_depressed, .. } => {
+                state
+                    .keyboard_events
+                    .push(KeyboardEvent::Modifiers { mods_depressed });
+            }
+            _ => (),
+        }
+    }
+}
+
 impl Dispatch<ZwpPointerConstraintsV1, ()> for State {
     fn event(
         _state: &mut Self,
@@ -2250,5 +2388,31 @@ impl Dispatch<XdgActivationTokenV1, ()> for State {
             }
             _ => unreachable!(),
         }
+    }
+}
+
+impl Dispatch<ZwpVirtualKeyboardManagerV1, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpVirtualKeyboardManagerV1,
+        _event: <ZwpVirtualKeyboardManagerV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        unreachable!()
+    }
+}
+
+impl Dispatch<ZwpVirtualKeyboardV1, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpVirtualKeyboardV1,
+        _event: <ZwpVirtualKeyboardV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        unreachable!()
     }
 }

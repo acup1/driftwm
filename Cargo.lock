@@ -539,6 +539,7 @@ dependencies = [
  "tracy-client",
  "wayland-client",
  "wayland-protocols",
+ "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "xcursor",
 ]
