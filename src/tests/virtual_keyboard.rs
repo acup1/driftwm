@@ -104,6 +104,82 @@ fn a_virtual_key_reaches_the_focused_window_with_the_virtual_keyboards_keymap_fi
 }
 
 #[test]
+fn an_on_screen_keyboard_uploading_the_seats_own_layout_costs_the_client_nothing() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let a = f.add_client();
+    // The keyboard binds off the back of the seat global, which itself only
+    // shows up after the client's first roundtrip; a second one is needed to
+    // actually see the keymap that bind provokes.
+    f.double_roundtrip(a);
+
+    let initial = f.client(a).drain_keyboard_events();
+    let Some(KeyboardEvent::Keymap(seat_text)) = initial.into_iter().next() else {
+        panic!("expected the seat's keymap on the client's first contact");
+    };
+    let us_text = compile_keymap("us").get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);
+    assert_eq!(
+        seat_text, us_text,
+        "precondition: the fixture's seat layout must be `us`, or uploading a \
+         `us` keymap below would not actually match what the client already holds"
+    );
+
+    let b = f.add_client();
+    map_window(&mut f, a, "typist", (400, 300));
+    assert_eq!(
+        keyboard_focus(&mut f),
+        Some(server_surface(&window_by_app_id(&mut f, "typist").unwrap())),
+        "precondition: the mapped window holds keyboard focus"
+    );
+    f.client(a).drain_keyboard_events();
+
+    let vk = f.client(b).create_virtual_keyboard();
+    f.client(b).virtual_keyboard_keymap(&vk, &us_text);
+    f.roundtrip(b);
+
+    f.client(b).virtual_keyboard_key(&vk, 1, KEY_A, true);
+    f.client(b).virtual_keyboard_key(&vk, 2, KEY_A, false);
+    f.roundtrip(b);
+    f.roundtrip(a);
+
+    assert_eq!(
+        f.client(a).drain_keyboard_events(),
+        vec![
+            KeyboardEvent::Key {
+                key: KEY_A,
+                state: 1
+            },
+            KeyboardEvent::Key {
+                key: KEY_A,
+                state: 0
+            },
+        ],
+        "uploading the seat's own layout must cost the client nothing but the \
+         key itself — no keymap re-send, and therefore no resync modifiers"
+    );
+
+    key_press(&mut f, KEY_B);
+    key_release(&mut f, KEY_B);
+    f.roundtrip(a);
+
+    assert_eq!(
+        f.client(a).drain_keyboard_events(),
+        vec![
+            KeyboardEvent::Key {
+                key: KEY_B,
+                state: 1
+            },
+            KeyboardEvent::Key {
+                key: KEY_B,
+                state: 0
+            },
+        ],
+        "a physical key afterwards must find nothing to restore, since the \
+         client's keymap never diverged from the seat's"
+    );
+}
+
+#[test]
 fn a_virtual_key_matching_a_compositor_binding_runs_the_action_and_never_reaches_the_client() {
     let mut f = Fixture::with_config(config(
         r#"
@@ -150,6 +226,129 @@ fn a_virtual_key_matching_a_compositor_binding_runs_the_action_and_never_reaches
             .any(|e| matches!(e, KeyboardEvent::Key { .. })),
         "a key a compositor binding consumes must never reach the focused \
          client, neither the press nor its paired release: {:?}",
+        f.client(a).keyboard_events()
+    );
+}
+
+#[test]
+fn a_bound_combo_still_fires_after_a_keymap_reupload_that_follows_modifiers() {
+    let mut f = Fixture::with_config(config(
+        r#"
+        [keybindings]
+        "ctrl+alt+equal" = "zoom-in"
+        "#,
+    ));
+    f.add_output(1, (1920, 1080));
+    let a = f.add_client();
+    map_window(&mut f, a, "typist", (400, 300));
+    assert_eq!(
+        keyboard_focus(&mut f),
+        Some(server_surface(&window_by_app_id(&mut f, "typist").unwrap())),
+        "precondition: the mapped window holds keyboard focus"
+    );
+    f.client(a).drain_keyboard_events();
+
+    let b = f.add_client();
+    let vk = f.client(b).create_virtual_keyboard();
+    let k1 = compile_keymap("us");
+    f.client(b)
+        .virtual_keyboard_keymap(&vk, &k1.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1));
+    f.roundtrip(b);
+
+    let ctrl = k1.mod_get_index(xkb::MOD_NAME_CTRL);
+    let alt = k1.mod_get_index(xkb::MOD_NAME_ALT);
+    let mask = (1u32 << ctrl) | (1u32 << alt);
+    f.client(b).virtual_keyboard_modifiers(&vk, mask);
+    f.roundtrip(b);
+
+    // `gb`, not `de`: both are a genuinely different keymap text from `us`,
+    // but `de` turns the physical `=` key into a dead-accent key at the base
+    // level, which would fail the binding lookup on the resolved sym alone —
+    // this scenario means to fail only if the *modifiers* are lost across the
+    // re-upload, so the sym must keep resolving to `equal`.
+    let k2 = compile_keymap("gb");
+    f.client(b)
+        .virtual_keyboard_keymap(&vk, &k2.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1));
+    f.roundtrip(b);
+
+    f.client(b).virtual_keyboard_key(&vk, 1, KEY_EQUAL, true);
+    f.client(b).virtual_keyboard_key(&vk, 2, KEY_EQUAL, false);
+    f.roundtrip(b);
+    f.roundtrip(a);
+
+    assert!(
+        f.state().zoom_target().is_some(),
+        "a bound combo must still fire after a keymap re-upload that follows \
+         the modifiers request"
+    );
+    assert!(
+        !f.client(a)
+            .keyboard_events()
+            .iter()
+            .any(|e| matches!(e, KeyboardEvent::Key { .. })),
+        "a key a compositor binding consumes must never reach the focused \
+         client, even after the keymap that resolved it was replaced: {:?}",
+        f.client(a).keyboard_events()
+    );
+}
+
+#[test]
+fn a_release_is_swallowed_across_a_keymap_reupload() {
+    let mut f = Fixture::with_config(config(
+        r#"
+        [keybindings]
+        "ctrl+alt+equal" = "zoom-in"
+        "#,
+    ));
+    f.add_output(1, (1920, 1080));
+    let a = f.add_client();
+    map_window(&mut f, a, "typist", (400, 300));
+    assert_eq!(
+        keyboard_focus(&mut f),
+        Some(server_surface(&window_by_app_id(&mut f, "typist").unwrap())),
+        "precondition: the mapped window holds keyboard focus"
+    );
+    f.client(a).drain_keyboard_events();
+
+    let b = f.add_client();
+    let vk = f.client(b).create_virtual_keyboard();
+    let k1 = compile_keymap("us");
+    f.client(b)
+        .virtual_keyboard_keymap(&vk, &k1.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1));
+    f.roundtrip(b);
+
+    let ctrl = k1.mod_get_index(xkb::MOD_NAME_CTRL);
+    let alt = k1.mod_get_index(xkb::MOD_NAME_ALT);
+    let mask = (1u32 << ctrl) | (1u32 << alt);
+    f.client(b).virtual_keyboard_modifiers(&vk, mask);
+    f.roundtrip(b);
+
+    f.client(b).virtual_keyboard_key(&vk, 1, KEY_EQUAL, true);
+    f.roundtrip(b);
+    f.roundtrip(a);
+    assert!(
+        f.state().zoom_target().is_some(),
+        "precondition: the press must run the bound action, so its release \
+         has something to swallow"
+    );
+
+    let k2 = compile_keymap("de");
+    f.client(b)
+        .virtual_keyboard_keymap(&vk, &k2.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1));
+    f.roundtrip(b);
+
+    f.client(b).virtual_keyboard_key(&vk, 2, KEY_EQUAL, false);
+    f.roundtrip(b);
+    f.roundtrip(a);
+
+    assert!(
+        !f.client(a)
+            .keyboard_events()
+            .iter()
+            .any(|e| matches!(e, KeyboardEvent::Key { .. })),
+        "the release paired with a swallowed press must stay swallowed across \
+         a keymap re-upload — neither it nor the press it belongs to may \
+         reach the client: {:?}",
         f.client(a).keyboard_events()
     );
 }
