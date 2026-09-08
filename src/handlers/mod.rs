@@ -1089,8 +1089,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// state shape alone — `ext_session_lock_surface_v1` has no destroy seam a
 /// handler could hook.
 pub(crate) struct LockRoleMarker {
-    /// driftwm answered this role's creation with a configure. Rules out the
-    /// two roles `new_surface` returns early on: those stay live and unconfigured
+    /// driftwm answered this role's creation with a configure. Rules out a role
+    /// `new_surface` returned early on: that one stays live and unconfigured
     /// forever, and must keep getting smithay's real error on a live proxy.
     pub configured: AtomicBool,
     /// The hook has already found this role orphaned. A latch, because the
@@ -1319,21 +1319,17 @@ impl SessionLockHandler for DriftWm {
     }
 
     fn unlock(&mut self) {
-        // Idempotence, not identity: any client still holding an
-        // `ext_session_lock_v1` can send `unlock_and_destroy` at any time — one
-        // that never locked anything lands here with the session already
-        // unlocked, and the conversion below must not run twice on an
-        // already-canvas location. One that sends it while the session really is
-        // locked does unlock it; see the residual noted in `lock`.
+        // smithay routes `unlock_and_destroy` here only from the lock holding
+        // the session — anyone else's gets `invalid_unlock`, nothing more — so
+        // this cannot run on an unlocked session; the guard only backstops the
+        // conversion below against running twice on an already-canvas location.
         if !self.session_lock.is_locked() {
             return;
         }
         tracing::info!("Session unlocked");
-        // `unlock_and_destroy` can land on a still-`Pending` lock — smithay
-        // answers it with a protocol error and honours it anyway — so this
-        // timer needs cancelling too, not just the `Locked` backstop. The
-        // timer's own state check stops it acting on a dead lock; it doesn't
-        // stop the wakeup.
+        // A no-op from `Locked`, which is the only state smithay reaches this
+        // from (`enter_locked` leaves `Pending` before it grants the lock);
+        // kept so a direct call from `Pending` never leaves the deadline armed.
         self.cancel_pending_deadline();
         self.cancel_lock_confirm_timer();
         // Undo the canvas→screen conversion `lock` established, before anything
@@ -1366,9 +1362,7 @@ impl SessionLockHandler for DriftWm {
         // `last_acked` the hook wrote, into the role being taken now — the
         // synthetic would tell the new role's first commit it had already acked,
         // masking a genuine violation. `None` is what a role starts on either
-        // way — first-ever or after smithay's `destroyed` reset. Above the early
-        // returns because a role driftwm declines is exactly a role that must
-        // keep getting smithay's real errors.
+        // way — first-ever or after smithay's `destroyed` reset.
         smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
             states
                 .data_map

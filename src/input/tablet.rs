@@ -122,7 +122,7 @@ impl DriftWm {
                 under,
                 &tool::MotionEvent {
                     location: canvas_pos,
-                    serial: SERIAL_COUNTER.next_serial(),
+                    serial,
                     time,
                 },
             );

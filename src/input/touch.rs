@@ -126,6 +126,9 @@ pub struct TouchState {
     /// motion replay `CancelAppSequence` runs, which would report the finger's
     /// position to the app behind the lock screen.
     pub lock_slots: HashSet<TouchSlot>,
+    /// A touch event reached a surface since the last `frame` went out — see
+    /// [`DriftWm::frame_touch_if_owed`].
+    pub frame_owed: bool,
 }
 
 impl TouchState {
@@ -139,6 +142,7 @@ impl TouchState {
             holdback: None,
             replaying_holdback: false,
             lock_slots: HashSet::new(),
+            frame_owed: false,
         }
     }
 }
@@ -253,6 +257,17 @@ impl DriftWm {
         self.touch_state.pending_close = None;
     }
 
+    /// smithay's `frame` wants at least one touch event before it in the same
+    /// frame and logs a warning otherwise, so a frame that follows only
+    /// swallowed events — a pan, a held-back finger — is not sent.
+    pub(crate) fn frame_touch_if_owed(&mut self) {
+        if std::mem::take(&mut self.touch_state.frame_owed)
+            && let Some(touch) = self.seat.get_touch()
+        {
+            touch.frame(self);
+        }
+    }
+
     /// Withhold a touch event from the app. A `Down` (re-)arms the flush
     /// deadline: each landing finger buys the next one `HOLDBACK_MS` to
     /// register before the sequence is handed to the app.
@@ -354,7 +369,7 @@ impl DriftWm {
                 ),
             }
         }
-        touch.frame(self);
+        self.frame_touch_if_owed();
         self.touch_state.replaying_holdback = false;
     }
 
@@ -519,7 +534,7 @@ impl DriftWm {
                     time,
                 },
             );
-            touch.frame(self);
+            self.frame_touch_if_owed();
             return;
         }
 
@@ -865,7 +880,7 @@ impl DriftWm {
                     time,
                 },
             );
-            touch.frame(self);
+            self.frame_touch_if_owed();
             return;
         }
 
@@ -910,7 +925,7 @@ impl DriftWm {
             }
             let touch = self.seat.get_touch().unwrap();
             touch.up(self, &UpEvent { slot, serial, time });
-            touch.frame(self);
+            self.frame_touch_if_owed();
             return;
         }
 
@@ -947,9 +962,7 @@ impl DriftWm {
     }
 
     pub fn on_touch_frame<I: InputBackend>(&mut self, _event: I::TouchFrameEvent) {
-        if let Some(touch) = self.seat.get_touch() {
-            touch.frame(self);
-        }
+        self.frame_touch_if_owed();
     }
 }
 

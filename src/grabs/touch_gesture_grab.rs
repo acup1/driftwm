@@ -353,7 +353,9 @@ impl TouchGestureGrab {
                 ),
             }
         }
-        handle.frame(data);
+        if std::mem::take(&mut data.touch_state.frame_owed) {
+            handle.frame(data);
+        }
     }
 
     /// Apply the recognizer's continuous-pan decision: scale the raw screen

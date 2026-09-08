@@ -146,14 +146,6 @@ impl VirtualKeyboardBindings {
             .count()
     }
 
-    /// Call after the seat's keymap may have changed. The `foreign_keymaps`
-    /// records stay: smithay broadcasts a changed keymap to every
-    /// `wl_keyboard` but stays silent when it compiles to the same text, and
-    /// either way the next physical key restores whoever still differs.
-    pub fn seat_keymap_changed(&mut self) {
-        self.seat_keymap = None;
-    }
-
     fn track_keymap(&mut self, id: ObjectId, format: u32, fd: &OwnedFd, size: usize) {
         if format != KeymapFormat::XkbV1 as u32 {
             tracing::debug!("virtual keyboard: unsupported keymap format {format}");
@@ -192,12 +184,25 @@ impl VirtualKeyboardBindings {
         };
         // A keymap re-upload (e.g. a layout switch) replaces the xkb state but
         // keeps the modifiers and the swallowed set: a key pressed under the old
-        // keymap still owes its release a swallow.
-        let mods = kb.keymap.take().map(|k| k.mods).unwrap_or_default();
+        // keymap still owes its release a swallow. The modifier mask goes onto
+        // the new state as well — the client applies the mask it is sent to the
+        // keymap it is sent, and the sym a binding is resolved from must agree.
+        let mut mods = kb.keymap.take().map(|k| k.mods).unwrap_or_default();
+        let mut state = xkb::State::new(&keymap);
+        let mask = mods.serialized;
+        state.update_mask(
+            mask.depressed,
+            mask.latched,
+            mask.locked,
+            0,
+            0,
+            mask.layout_effective,
+        );
+        mods.update_with(&state);
         kb.keymap = Some(VirtualKeymap {
             file: KeymapFile::new(&keymap),
             text: string.into(),
-            state: xkb::State::new(&keymap),
+            state,
             mods,
         });
     }
@@ -444,6 +449,22 @@ where
             keyboard.modifier_state(),
             SERIAL_COUNTER.next_serial(),
         );
+    }
+}
+
+/// Call after the seat's keymap may have changed. smithay broadcasts a changed
+/// keymap to every `wl_keyboard`, which overwrites whatever virtual keymap any
+/// of them held, so the records go with it; one that compiles to the same text
+/// reaches nobody and leaves them true.
+pub fn seat_keymap_changed<D>(state: &mut D, keyboard: &KeyboardHandle<D>)
+where
+    D: SeatHandler + VirtualKeyboardBindingHandler + 'static,
+{
+    let Some(old) = state.virtual_keyboard_bindings().seat_keymap.take() else {
+        return;
+    };
+    if *seat_keymap(state, keyboard) != *old.text {
+        state.virtual_keyboard_bindings().foreign_keymaps.clear();
     }
 }
 

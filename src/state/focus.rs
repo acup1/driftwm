@@ -216,14 +216,17 @@ impl PointerTarget<DriftWm> for FocusTarget {
 
 impl TouchTarget<DriftWm> for FocusTarget {
     fn down(&self, seat: &Seat<DriftWm>, data: &mut DriftWm, event: &TouchDownEvent) {
+        data.touch_state.frame_owed = true;
         <WlSurface as TouchTarget<DriftWm>>::down(&self.0, seat, data, event);
     }
 
     fn up(&self, seat: &Seat<DriftWm>, data: &mut DriftWm, event: &TouchUpEvent) {
+        data.touch_state.frame_owed = true;
         <WlSurface as TouchTarget<DriftWm>>::up(&self.0, seat, data, event);
     }
 
     fn motion(&self, seat: &Seat<DriftWm>, data: &mut DriftWm, event: &TouchMotionEvent) {
+        data.touch_state.frame_owed = true;
         <WlSurface as TouchTarget<DriftWm>>::motion(&self.0, seat, data, event);
     }
 
@@ -241,6 +244,7 @@ impl TouchTarget<DriftWm> for FocusTarget {
         data: &mut DriftWm,
         event: &smithay::input::touch::ShapeEvent,
     ) {
+        data.touch_state.frame_owed = true;
         <WlSurface as TouchTarget<DriftWm>>::shape(&self.0, seat, data, event);
     }
 
@@ -250,6 +254,7 @@ impl TouchTarget<DriftWm> for FocusTarget {
         data: &mut DriftWm,
         event: &smithay::input::touch::OrientationEvent,
     ) {
+        data.touch_state.frame_owed = true;
         <WlSurface as TouchTarget<DriftWm>>::orientation(&self.0, seat, data, event);
     }
 
