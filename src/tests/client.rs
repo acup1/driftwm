@@ -806,7 +806,17 @@ impl Client {
         keyboard: &ZwpVirtualKeyboardV1,
         mods_depressed: u32,
     ) {
-        keyboard.modifiers(mods_depressed, 0, 0, 0);
+        self.virtual_keyboard_modifiers_in_group(keyboard, mods_depressed, 0);
+    }
+
+    /// `zwp_virtual_keyboard_v1.modifiers` with a layout group as well.
+    pub fn virtual_keyboard_modifiers_in_group(
+        &mut self,
+        keyboard: &ZwpVirtualKeyboardV1,
+        mods_depressed: u32,
+        group: u32,
+    ) {
+        keyboard.modifiers(mods_depressed, 0, 0, group);
         self.connection.flush().unwrap();
     }
 

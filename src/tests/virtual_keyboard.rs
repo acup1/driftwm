@@ -3,6 +3,8 @@
 //! bound combo runs the compositor action with press and release swallowed,
 //! and anything else reaches the focused client under the virtual keyboard's
 //! keymap, which a physical key afterwards must find restored to the seat's.
+//! A seat layout reload overwrites that keymap, so the next virtual key sends
+//! it again.
 
 use smithay::input::keyboard::xkb;
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_v1::{
@@ -16,6 +18,7 @@ use super::{Fixture, config, keyboard_focus, map_window, server_surface, window_
 const KEY_A: u32 = 30;
 const KEY_EQUAL: u32 = 13;
 const KEY_B: u32 = 48;
+const KEY_Y: u32 = 21;
 
 fn compile_keymap(layout: &str) -> xkb::Keymap {
     let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
@@ -171,7 +174,7 @@ fn a_virtual_key_matching_a_compositor_binding_runs_the_action_and_never_reaches
     let mut f = Fixture::with_config(config(
         r#"
         [keybindings]
-        "ctrl+alt+equal" = "zoom-in"
+        "ctrl+alt+equal" = "zoom-out"
         "#,
     ));
     f.add_output(1, (1920, 1080));
@@ -183,6 +186,8 @@ fn a_virtual_key_matching_a_compositor_binding_runs_the_action_and_never_reaches
         "precondition: the mapped window holds keyboard focus"
     );
     f.client(a).drain_keyboard_events();
+
+    let resting_zoom = f.state().zoom_target();
 
     let b = f.add_client();
     let vk = f.client(b).create_virtual_keyboard();
@@ -202,8 +207,9 @@ fn a_virtual_key_matching_a_compositor_binding_runs_the_action_and_never_reaches
     f.roundtrip(b);
     f.roundtrip(a);
 
-    assert!(
-        f.state().zoom_target().is_some(),
+    assert_ne!(
+        f.state().zoom_target(),
+        resting_zoom,
         "a virtual key matching a compositor binding must run its action"
     );
     assert!(
@@ -222,7 +228,7 @@ fn a_bound_combo_still_fires_after_a_keymap_reupload_that_follows_modifiers() {
     let mut f = Fixture::with_config(config(
         r#"
         [keybindings]
-        "ctrl+alt+equal" = "zoom-in"
+        "ctrl+alt+equal" = "zoom-out"
         "#,
     ));
     f.add_output(1, (1920, 1080));
@@ -234,6 +240,8 @@ fn a_bound_combo_still_fires_after_a_keymap_reupload_that_follows_modifiers() {
         "precondition: the mapped window holds keyboard focus"
     );
     f.client(a).drain_keyboard_events();
+
+    let resting_zoom = f.state().zoom_target();
 
     let b = f.add_client();
     let vk = f.client(b).create_virtual_keyboard();
@@ -262,8 +270,9 @@ fn a_bound_combo_still_fires_after_a_keymap_reupload_that_follows_modifiers() {
     f.roundtrip(b);
     f.roundtrip(a);
 
-    assert!(
-        f.state().zoom_target().is_some(),
+    assert_ne!(
+        f.state().zoom_target(),
+        resting_zoom,
         "a bound combo must still fire after a keymap re-upload that follows \
          the modifiers request"
     );
@@ -283,7 +292,7 @@ fn a_release_is_swallowed_across_a_keymap_reupload() {
     let mut f = Fixture::with_config(config(
         r#"
         [keybindings]
-        "ctrl+alt+equal" = "zoom-in"
+        "ctrl+alt+equal" = "zoom-out"
         "#,
     ));
     f.add_output(1, (1920, 1080));
@@ -295,6 +304,8 @@ fn a_release_is_swallowed_across_a_keymap_reupload() {
         "precondition: the mapped window holds keyboard focus"
     );
     f.client(a).drain_keyboard_events();
+
+    let resting_zoom = f.state().zoom_target();
 
     let b = f.add_client();
     let vk = f.client(b).create_virtual_keyboard();
@@ -312,8 +323,9 @@ fn a_release_is_swallowed_across_a_keymap_reupload() {
     f.client(b).virtual_keyboard_key(&vk, 1, KEY_EQUAL, true);
     f.roundtrip(b);
     f.roundtrip(a);
-    assert!(
-        f.state().zoom_target().is_some(),
+    assert_ne!(
+        f.state().zoom_target(),
+        resting_zoom,
         "precondition: the press must run the bound action, so its release \
          has something to swallow"
     );
@@ -469,5 +481,135 @@ fn destroying_a_virtual_keyboard_frees_its_bookkeeping() {
         f.state().virtual_kb_bindings.keyboard_count(),
         0,
         "destroying the virtual keyboard must free its compositor-side bookkeeping"
+    );
+}
+
+#[test]
+fn a_layout_reload_resends_a_held_virtual_keymap_before_the_next_virtual_key() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let a = f.add_client();
+    let b = f.add_client();
+    map_window(&mut f, a, "typist", (400, 300));
+    assert_eq!(
+        keyboard_focus(&mut f),
+        Some(server_surface(&window_by_app_id(&mut f, "typist").unwrap())),
+        "precondition: the mapped window holds keyboard focus"
+    );
+    f.client(a).drain_keyboard_events();
+
+    let vk = f.client(b).create_virtual_keyboard();
+    let text = compile_keymap("gb").get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);
+    f.client(b).virtual_keyboard_keymap(&vk, &text);
+    f.roundtrip(b);
+
+    f.client(b).virtual_keyboard_key(&vk, 1, KEY_A, true);
+    f.client(b).virtual_keyboard_key(&vk, 2, KEY_A, false);
+    f.roundtrip(b);
+    f.roundtrip(a);
+    assert!(
+        matches!(
+            f.client(a).drain_keyboard_events().first(),
+            Some(KeyboardEvent::Keymap(held)) if *held == text
+        ),
+        "precondition: the first virtual key leaves the client holding the \
+         virtual keyboard's keymap"
+    );
+
+    f.state()
+        .reload_config_from_contents("[input.keyboard]\nlayout = \"de\"\n");
+    // The headless fixture has no backend to drain a queued mode intent.
+    f.state().pending_mode_changes.clear();
+    f.roundtrip(a);
+    assert!(
+        f.client(a)
+            .drain_keyboard_events()
+            .iter()
+            .any(|e| matches!(e, KeyboardEvent::Keymap(_))),
+        "precondition: the reloaded seat layout is broadcast to every \
+         wl_keyboard, overwriting the virtual keymap the client held"
+    );
+
+    f.client(b).virtual_keyboard_key(&vk, 3, KEY_A, true);
+    f.client(b).virtual_keyboard_key(&vk, 4, KEY_A, false);
+    f.roundtrip(b);
+    f.roundtrip(a);
+
+    assert_eq!(
+        f.client(a).drain_keyboard_events(),
+        vec![
+            KeyboardEvent::Keymap(text),
+            KeyboardEvent::Modifiers { mods_depressed: 0 },
+            KeyboardEvent::Key {
+                key: KEY_A,
+                state: 1
+            },
+            KeyboardEvent::Key {
+                key: KEY_A,
+                state: 0
+            },
+        ],
+        "a layout reload takes the virtual keymap off the client, so the next \
+         virtual key must hand it back before the key it decodes"
+    );
+}
+
+#[test]
+fn a_layout_group_selected_before_a_keymap_reupload_still_resolves_the_bound_sym() {
+    let mut f = Fixture::with_config(config(
+        r#"
+        [keybindings]
+        "ctrl+z" = "zoom-out"
+        "#,
+    ));
+    f.add_output(1, (1920, 1080));
+    let a = f.add_client();
+    map_window(&mut f, a, "typist", (400, 300));
+    assert_eq!(
+        keyboard_focus(&mut f),
+        Some(server_surface(&window_by_app_id(&mut f, "typist").unwrap())),
+        "precondition: the mapped window holds keyboard focus"
+    );
+    f.client(a).drain_keyboard_events();
+
+    let resting_zoom = f.state().zoom_target();
+
+    let b = f.add_client();
+    let vk = f.client(b).create_virtual_keyboard();
+    // Two groups, and only the second one — `de` — puts the bound `z` on the
+    // physical `y` key, so the binding fires from the group alone.
+    let keymap = compile_keymap("us,de");
+    let text = keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);
+    f.client(b).virtual_keyboard_keymap(&vk, &text);
+    f.roundtrip(b);
+
+    let ctrl = keymap.mod_get_index(xkb::MOD_NAME_CTRL);
+    f.client(b)
+        .virtual_keyboard_modifiers_in_group(&vk, 1u32 << ctrl, 1);
+    f.roundtrip(b);
+
+    f.client(b).virtual_keyboard_keymap(&vk, &text);
+    f.roundtrip(b);
+
+    f.client(b).virtual_keyboard_key(&vk, 1, KEY_Y, true);
+    f.client(b).virtual_keyboard_key(&vk, 2, KEY_Y, false);
+    f.roundtrip(b);
+    f.roundtrip(a);
+
+    assert_ne!(
+        f.state().zoom_target(),
+        resting_zoom,
+        "a re-upload replaces the xkb state, and the layout group the \
+         modifiers request selected must go back onto it — otherwise the key \
+         resolves under the first group and the bound zoom never runs"
+    );
+    assert!(
+        !f.client(a)
+            .keyboard_events()
+            .iter()
+            .any(|e| matches!(e, KeyboardEvent::Key { .. })),
+        "a key a compositor binding consumes must never reach the focused \
+         client: {:?}",
+        f.client(a).keyboard_events()
     );
 }
