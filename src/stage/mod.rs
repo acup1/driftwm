@@ -47,8 +47,8 @@ pub struct FullscreenEntry<W> {
     /// The committed size the window entered fullscreen with, while it differs
     /// from what the entry offered and the client has not answered yet: for
     /// those frames the rect the pointer path hit-tests is the old size at the
-    /// new position, and the pull holds off it. `None` once the client commits
-    /// a different size or the centring pass has taken its answer.
+    /// new position, and the pull holds off it. `None` once the centring pass
+    /// has taken the answer, at whatever size the client commits.
     pub awaiting_size: Option<Size<i32, Logical>>,
 }
 

@@ -973,8 +973,9 @@ pub struct DriftWm {
     /// render in one iteration.
     pub last_animation_tick: Instant,
     /// The last [`PointerDelivery`] actually put on the wire. `None` while the
-    /// record can't be trusted — nothing under the cursor, or a grab that
-    /// substituted its own focus and location. Written only by
+    /// record can't be trusted — nothing under the cursor, or a grab that does
+    /// its own work in `motion` (every driftwm grab); smithay's click and popup
+    /// grabs are recorded as what they forward. Written only by
     /// [`DriftWm::dispatch_pointer_motion`], read by
     /// [`DriftWm::refresh_pointer_focus`] to drop a re-seat the client would see
     /// as a phantom mouse move.

@@ -512,10 +512,16 @@ fn a_layer_surface_mapping_under_a_stationary_cursor_gets_enter_and_a_click_grab
         ),
     );
 
-    assert!(
-        f.client(id).state.pointer_positions.len() > positions_before,
-        "the freshly mapped bar must have been handed an enter for the \
-         stationary cursor now over it"
+    assert_eq!(
+        f.client(id).state.pointer_positions.len(),
+        positions_before + 1,
+        "exactly one enter for the stationary cursor now over the freshly \
+         mapped bar"
+    );
+    // 1040 is the bottom-anchored 40 px bar's top edge on the 1080 px output.
+    assert_eq!(
+        f.client(id).state.pointer_positions.last(),
+        Some(&(over_bar.x, over_bar.y - 1040.0))
     );
 
     press(&mut f, &device, BTN_LEFT);
