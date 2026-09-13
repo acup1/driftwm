@@ -1380,9 +1380,16 @@ impl SessionLockHandler for DriftWm {
             return;
         }
 
-        let output =
-            smithay::output::Output::from_resource(&wl_output).or_else(|| self.active_output());
-        let Some(output) = output else { return };
+        // A removed output's `wl_output` still resolves for as long as its
+        // global lingers (udev keeps it ten seconds past the disable), so
+        // membership in the space is the test, not resolution. Keyed on a dead
+        // output, the surface would sit in `lock_surfaces`, painted by nothing,
+        // until the unlock cleared it.
+        let Some(output) = smithay::output::Output::from_resource(&wl_output)
+            .filter(|output| self.space.outputs().any(|o| o == output))
+        else {
+            return;
+        };
 
         let output_size = crate::state::output_logical_size(&output);
 

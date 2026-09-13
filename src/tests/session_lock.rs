@@ -2195,3 +2195,53 @@ fn a_declined_lock_role_on_a_surface_configured_before_stays_dark() {
         "the refused client survives its defused commit"
     );
 }
+
+/// A lock surface requested for an output that has already left: the client
+/// held that output's `wl_output` across the removal. It has nowhere to go,
+/// and must not be re-homed onto the survivor — the insert there would evict
+/// the prompt the survivor already shows.
+#[test]
+fn a_lock_surface_for_a_removed_output_does_not_evict_the_survivors_prompt() {
+    let mut f = Fixture::new();
+    f.skip_baseline_check();
+    let survivor = f.add_output(1, (1920, 1080));
+    let leaving = f.add_output(2, (800, 600));
+    let id = f.add_client();
+
+    f.state().focused_output = Some(survivor.clone());
+    f.client(id).lock_session();
+    f.roundtrip(id);
+    let prompt = confirm_lock(&mut f, id, &survivor);
+
+    let stale_output = f.client(id).output(&leaving.name());
+    f.remove_output(&leaving);
+    let orphan = f
+        .client(id)
+        .create_lock_surface(&stale_output)
+        .surface
+        .clone();
+    f.double_roundtrip(id);
+
+    assert!(
+        f.client(id)
+            .lock_surface(&orphan)
+            .configures_received
+            .is_empty(),
+        "a surface for a gone output must not be configured: there is no \
+         output to size it for"
+    );
+    assert_eq!(
+        f.state()
+            .lock_surfaces
+            .get(&survivor)
+            .map(|ls| ls.wl_surface().clone()),
+        Some(prompt),
+        "the survivor must keep the prompt it already shows; a surface for a \
+         gone output must be dropped, not re-homed over it"
+    );
+    assert_eq!(
+        f.state().lock_surfaces.len(),
+        1,
+        "the orphaned surface must not be recorded on any output"
+    );
+}
