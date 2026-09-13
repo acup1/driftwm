@@ -54,12 +54,12 @@ impl DriftWm {
     /// locker is consumed — so inside that gap a plain `destroy` is accepted
     /// without `invalid_destroy` (leaving a locked session with a dead lock
     /// object, which the dead-client replacement path recovers), and an
-    /// `unlock_and_destroy` posts `invalid_unlock` and then unlocks regardless
-    /// (smithay's request handler has no early return after the error), so the
-    /// client is killed by a fatal protocol error *and* the session comes
-    /// unlocked where it previously just worked. That `unlock()` can also drop a
-    /// `pending_confirmation` still holding the locker, whose `Drop` sends
-    /// `finished`.
+    /// `unlock_and_destroy` posts `invalid_unlock` and stops there without
+    /// unlocking, which the same path recovers. The protocol forbids that
+    /// request before `locked`, so a conformant locker never sends it — but
+    /// the keyboard is handed to the lock surface below while the confirmation
+    /// is still pending, so a password typed during a stalled confirmation can
+    /// drive one into it (see the session-lock item in `dev/docs/todo.md`).
     pub fn enter_locked(&mut self, locker: SessionLocker) {
         let lock = locker.ext_session_lock().clone();
         #[allow(clippy::mutable_key_type)]
