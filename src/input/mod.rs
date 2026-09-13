@@ -829,6 +829,7 @@ impl DriftWm {
         self.last_pointer_delivery = delivered
             .as_ref()
             .map(|(focus, origin)| (focus.clone(), *origin, location - *origin));
+        self.last_pointer_under = under.clone();
         pointer.motion(
             self,
             under,
@@ -1024,7 +1025,16 @@ impl DriftWm {
         // while smithay still holds focus on the dead surface. Skipping there
         // routes the next press into a destroyed surface, which is the whole
         // reason this function exists. Do not drop the conjunct.
-        let redundant = focus_unchanged && delivery == self.last_pointer_delivery;
+        //
+        // `under` too: the popup grab filters a foreign surface to `None`, so
+        // the delivery stays `None` while that surface moves away, but
+        // smithay's `unset_grab` restores focus from `pending_focus` — the raw
+        // `under` last given to `pointer.motion` — and would re-enter it for
+        // one flush. A `None`-for-`None` dispatch through the grab puts
+        // nothing on the wire.
+        let redundant = focus_unchanged
+            && delivery == self.last_pointer_delivery
+            && under == self.last_pointer_under;
         if !redundant {
             let serial = SERIAL_COUNTER.next_serial();
             let time = crate::input::monotonic_msec();

@@ -980,6 +980,11 @@ pub struct DriftWm {
     /// [`DriftWm::refresh_pointer_focus`] to drop a re-seat the client would see
     /// as a phantom mouse move.
     pub last_pointer_delivery: Option<PointerDelivery>,
+    /// The raw `under` last handed to `pointer.motion`, grabbed or not — a
+    /// shadow of smithay's `pending_focus`, which `unset_grab` restores focus
+    /// from. `relative_motion` sets that too, but with the same focus, so the
+    /// shadow stays exact.
+    pub last_pointer_under: Option<(FocusTarget, Point<f64, Logical>)>,
     /// wl_surface commits since the last rendered frame. Tracy diagnostic
     /// counter (plotted as `frame.commits`); sampled and reset on every
     /// render_frame, so it's only meaningful on a single-output profiling

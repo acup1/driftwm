@@ -23,7 +23,7 @@ use driftwm::config::{Action, BTN_LEFT, Direction};
 
 use crate::input::PointerGrabKind;
 use crate::ipc::dispatch;
-use crate::ipc::protocol::{Request, Response};
+use crate::ipc::protocol::{Request, Response, WindowSelector};
 use crate::state::{DriftWm, StageWindow};
 
 use super::client::ClientId;
@@ -669,6 +669,82 @@ fn an_open_menu_over_a_stationary_cursor_gets_no_further_motion_over_several_pul
     f.client(id).popup(&popup_surface).destroy();
     f.double_roundtrip(id);
     f.pump(3);
+}
+
+/// A menu open on one client, the cursor resting on another client's window,
+/// and that window moved away under the stationary cursor. Dismissing the
+/// menu must not hand the bystander an enter.
+#[test]
+fn a_window_that_left_a_stationary_cursor_under_an_open_menu_is_not_re_entered_on_dismiss() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let menu_owner = f.add_client();
+    let bystander = f.add_client();
+    let device = FakeDevice::mouse();
+
+    map_window(&mut f, bystander, "bystander", (400, 300));
+    let bystander_window = window_by_app_id(&mut f, "bystander").unwrap();
+    // The fixture cascades a second window over the first by a few pixels, so
+    // park the bystander (by its centre, as IPC moves go) clear of where the
+    // menu owner and its popup land, still inside the viewport.
+    let bystander_centre = (700, 0);
+    dispatch(
+        Request::Move {
+            window: Some(WindowSelector::AppId("bystander".into())),
+            to: Some(bystander_centre),
+        },
+        f.state(),
+    )
+    .unwrap();
+    f.roundtrip(bystander);
+    let bystander_pos = f
+        .state()
+        .stage
+        .position_of(&bystander_window)
+        .unwrap()
+        .to_f64();
+    let (_parent_window, _parent_pos, _cursor, popup_surface) =
+        setup_grabbed_popup_over_stationary_cursor(&mut f, menu_owner, &device);
+
+    let cursor = bystander_pos + Point::from((50.0, 50.0));
+    pointer_to(&mut f, &device, cursor);
+    f.roundtrip(bystander);
+    assert_eq!(
+        f.state().surface_under(cursor, None).map(|(t, _)| t.0),
+        Some(server_surface(&bystander_window)),
+        "test setup bug: the cursor must rest on the bystander"
+    );
+    assert!(
+        pointer_focus(&mut f).is_none(),
+        "test setup bug: under the menu's grab the bystander must get no focus"
+    );
+    let positions_before = f.client(bystander).state.pointer_positions.len();
+
+    dispatch(
+        Request::Move {
+            window: Some(WindowSelector::AppId("bystander".into())),
+            to: Some((bystander_centre.0 + 2000, bystander_centre.1)),
+        },
+        f.state(),
+    )
+    .unwrap();
+    f.roundtrip(bystander);
+
+    f.client(menu_owner).popup(&popup_surface).destroy();
+    f.double_roundtrip(menu_owner);
+    f.pump(3);
+    f.roundtrip(bystander);
+
+    assert!(
+        pointer_focus(&mut f).is_none(),
+        "the cursor rests on bare canvas once the menu is gone"
+    );
+    assert_eq!(
+        f.client(bystander).state.pointer_positions.len(),
+        positions_before,
+        "dismissing the menu must not re-enter a window that already left \
+         the stationary cursor"
+    );
 }
 
 /// A persistent confine whose region is re-set around the parked cursor arms

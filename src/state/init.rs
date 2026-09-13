@@ -409,6 +409,7 @@ impl DriftWm {
             config_file_mtime: None,
             last_animation_tick: Instant::now(),
             last_pointer_delivery: None,
+            last_pointer_under: None,
             commits_since_render: 0,
             focused_output: None,
             gesture_output: None,

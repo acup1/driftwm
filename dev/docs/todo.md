@@ -17,14 +17,15 @@ here. Line numbers drift; re-verify on pickup. Profiling tooling:
   `focus_cascade` return a `PointerPick { under, over_layer, over_screen_space }`
   so the classification travels with the result, have `pointer_focus_under_pick`
   assign the fields, and delete `focus_under`.
-- **Popup-grab `pending_focus` lag.** Under a live popup grab the pull's dedup
-  keys on the filtered delivery, but `dispatch_pointer_motion` hands the raw
-  `under` to `pointer.motion`, which is what sets smithay's `pending_focus`. If
-  `under` changes bar → canvas while the filtered delivery stays `None`, nothing
-  dispatches and `pending_focus` lags; the deferred `unset_grab` in
-  `tear_down_popup_grab` then re-enters the stale surface for one flush. Visible
-  as an enter/leave flicker on a bar. Fix: in the Popup arm of
-  `refresh_pointer_focus`, count a change in raw `under` as non-redundant.
+- **A menu dismissed in the same iteration as a scene change restores stale
+  focus.** The pull's `has_ended` arm tears the popup grab down before the
+  pick, so smithay's `pending_focus` is what the previous iteration's pull
+  wrote; a foreign surface that moved away in this very iteration is
+  re-entered for one flush by the deferred `unset_grab`. One iteration wide;
+  the pull corrects it next. Closing it means re-picking in the teardown idle
+  and handing `pointer.motion(under)` to the dead grab, whose own `motion`
+  restores from the fresh `under` — inside the pointer dispatch, which is what
+  the arm avoids. Probably not worth it.
 - **The pull refreshes `wl_pointer`, not the tablet tool's own focus.** A window
   closing or moving under a *resting* pen leaves `tool.down` aimed at the tool's
   cached surface until the pen moves. Low; the pen's next event corrects it.
