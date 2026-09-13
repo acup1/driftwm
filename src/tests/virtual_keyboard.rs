@@ -613,3 +613,164 @@ fn a_layout_group_selected_before_a_keymap_reupload_still_resolves_the_bound_sym
         f.client(a).keyboard_events()
     );
 }
+
+/// The seat's-own-layout path deliberately sends no keymap, so it records no
+/// keymap to restore either — but the modifiers an on-screen keyboard sends
+/// still reach the client, and a held on-screen Shift must not outlive the
+/// next physical key.
+#[test]
+fn a_physical_key_resets_the_modifiers_an_identical_keymap_upload_left_held() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let a = f.add_client();
+    f.double_roundtrip(a);
+    let Some(KeyboardEvent::Keymap(seat_text)) =
+        f.client(a).drain_keyboard_events().into_iter().next()
+    else {
+        panic!("expected the seat's keymap on the client's first contact");
+    };
+    let us = compile_keymap("us");
+    assert_eq!(
+        seat_text,
+        us.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1),
+        "precondition: the fixture's seat layout must be `us`"
+    );
+
+    let b = f.add_client();
+    map_window(&mut f, a, "typist", (400, 300));
+    f.client(a).drain_keyboard_events();
+
+    let vk = f.client(b).create_virtual_keyboard();
+    f.client(b).virtual_keyboard_keymap(&vk, &seat_text);
+    f.roundtrip(b);
+
+    let shift = 1u32 << us.mod_get_index(xkb::MOD_NAME_SHIFT);
+    f.client(b).virtual_keyboard_modifiers(&vk, shift);
+    f.roundtrip(b);
+    f.roundtrip(a);
+    assert_eq!(
+        f.client(a).drain_keyboard_events(),
+        vec![KeyboardEvent::Modifiers {
+            mods_depressed: shift
+        }],
+        "precondition: the on-screen Shift reaches the client, with no keymap \
+         re-send since the layout is the seat's own"
+    );
+
+    key_press(&mut f, KEY_B);
+    key_release(&mut f, KEY_B);
+    f.roundtrip(a);
+
+    let events = f.client(a).drain_keyboard_events();
+    let reset = events
+        .iter()
+        .position(|e| matches!(e, KeyboardEvent::Modifiers { mods_depressed: 0 }));
+    let key = events.iter().position(|e| {
+        matches!(
+            e,
+            KeyboardEvent::Key {
+                key: KEY_B,
+                state: 1
+            }
+        )
+    });
+    assert!(
+        matches!((reset, key), (Some(r), Some(k)) if r < k),
+        "the physical key must find the seat's modifiers put back before it, \
+         or the client types it under the on-screen Shift: {events:?}"
+    );
+}
+
+/// A virtual keyboard destroyed with a forwarded key still down must release
+/// it — `wl_keyboard` has no event for a vanished source, so the client would
+/// otherwise hold the key, and repeat it, until it lost focus.
+#[test]
+fn destroying_a_virtual_keyboard_releases_the_key_it_left_pressed() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let a = f.add_client();
+    map_window(&mut f, a, "typist", (400, 300));
+    f.client(a).drain_keyboard_events();
+
+    let b = f.add_client();
+    let vk = f.client(b).create_virtual_keyboard();
+    let text = compile_keymap("de").get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);
+    f.client(b).virtual_keyboard_keymap(&vk, &text);
+    f.roundtrip(b);
+
+    f.client(b).virtual_keyboard_key(&vk, 1, KEY_A, true);
+    f.roundtrip(b);
+    f.roundtrip(a);
+    assert!(
+        f.client(a)
+            .drain_keyboard_events()
+            .contains(&KeyboardEvent::Key {
+                key: KEY_A,
+                state: 1
+            }),
+        "precondition: the press reached the client"
+    );
+
+    f.client(b).virtual_keyboard_destroy(&vk);
+    f.roundtrip(b);
+    f.roundtrip(a);
+
+    assert!(
+        f.client(a)
+            .drain_keyboard_events()
+            .contains(&KeyboardEvent::Key {
+                key: KEY_A,
+                state: 0
+            }),
+        "the teardown must release the key the virtual keyboard left pressed"
+    );
+}
+
+/// A bound press never reached the client, so its teardown owes no release —
+/// one would be a release without a press.
+#[test]
+fn destroying_a_virtual_keyboard_does_not_release_a_swallowed_key() {
+    let mut f = Fixture::with_config(config(
+        r#"
+        [keybindings]
+        "ctrl+alt+equal" = "zoom-out"
+        "#,
+    ));
+    f.add_output(1, (1920, 1080));
+    let a = f.add_client();
+    map_window(&mut f, a, "typist", (400, 300));
+    f.client(a).drain_keyboard_events();
+
+    let b = f.add_client();
+    let vk = f.client(b).create_virtual_keyboard();
+    let keymap = compile_keymap("us");
+    f.client(b)
+        .virtual_keyboard_keymap(&vk, &keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1));
+    f.roundtrip(b);
+
+    let ctrl = 1u32 << keymap.mod_get_index(xkb::MOD_NAME_CTRL);
+    let alt = 1u32 << keymap.mod_get_index(xkb::MOD_NAME_ALT);
+    f.client(b).virtual_keyboard_modifiers(&vk, ctrl | alt);
+    f.client(b).virtual_keyboard_key(&vk, 1, KEY_EQUAL, true);
+    f.roundtrip(b);
+    f.roundtrip(a);
+    assert!(
+        !f.client(a)
+            .drain_keyboard_events()
+            .iter()
+            .any(|e| matches!(e, KeyboardEvent::Key { key: KEY_EQUAL, .. })),
+        "precondition: the bound press was swallowed"
+    );
+
+    f.client(b).virtual_keyboard_destroy(&vk);
+    f.roundtrip(b);
+    f.roundtrip(a);
+
+    assert!(
+        !f.client(a)
+            .drain_keyboard_events()
+            .iter()
+            .any(|e| matches!(e, KeyboardEvent::Key { key: KEY_EQUAL, .. })),
+        "a swallowed press owes no release; the client never saw the press"
+    );
+}

@@ -104,6 +104,11 @@ impl VirtualKeyboardManagerState {
 pub struct VirtualKeyboardBindings {
     keyboards: HashMap<ObjectId, VirtualKeyboard>,
     foreign_keymaps: Vec<(Weak<WlKeyboard>, Rc<str>)>,
+    /// The focused client holds a modifier mask a virtual keyboard set. The
+    /// keymap records cannot stand in for this: a virtual keymap that reads the
+    /// same as the seat's records nothing, while its modifiers reach the client
+    /// all the same.
+    virtual_mods_sent: bool,
     seat_keymap: Option<SeatKeymap>,
 }
 
@@ -118,6 +123,9 @@ struct VirtualKeyboard {
     /// Keycodes whose press a binding consumed; their release must be
     /// swallowed too, or the client sees a release without a press.
     swallowed: HashSet<u32>,
+    /// Keycodes forwarded to the focused client as pressed and not yet
+    /// released, for [`release_forwarded`] to lift on destroy.
+    forwarded: HashSet<u32>,
 }
 
 struct VirtualKeymap {
@@ -199,9 +207,13 @@ impl VirtualKeyboardBindings {
             mask.layout_effective,
         );
         mods.update_with(&state);
+        // The canonical serialization, not the upload's bytes: `seat_keymap`
+        // records `get_as_string` too, and the two are compared verbatim to
+        // decide whether a restore is owed.
+        let text: Rc<str> = keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1).into();
         kb.keymap = Some(VirtualKeymap {
             file: KeymapFile::new(&keymap),
-            text: string.into(),
+            text,
             state,
             mods,
         });
@@ -282,6 +294,19 @@ where
     Some((focus, client))
 }
 
+/// Mark the focused client as carrying a virtual modifier mask, so
+/// [`restore_seat_keymap`] puts the seat's back even with no keymap to restore
+/// alongside. A mask equal to the seat's own is an input method echoing what
+/// the seat told it; the client already matches, so it is skipped.
+fn record_virtual_mods<D>(state: &mut D, keyboard: &KeyboardHandle<D>, mods: ModifiersState)
+where
+    D: SeatHandler + VirtualKeyboardBindingHandler + 'static,
+{
+    if mods.serialized != keyboard.modifier_state().serialized {
+        state.virtual_keyboard_bindings().virtual_mods_sent = true;
+    }
+}
+
 fn seat_keymap<D>(state: &mut D, keyboard: &KeyboardHandle<D>) -> Rc<str>
 where
     D: SeatHandler + VirtualKeyboardBindingHandler + 'static,
@@ -360,6 +385,7 @@ where
     let mods = keymap.mods;
     if sent {
         focus.modifiers(seat, state, mods, SERIAL_COUNTER.next_serial());
+        record_virtual_mods(state, keyboard, mods);
     }
     sent
 }
@@ -375,7 +401,7 @@ where
     let Some((focus, client)) = focused_client(&keyboard) else {
         return;
     };
-    send_keymap(state, seat, &keyboard, id, &focus, &client);
+    send_keymap(state, seat, &keyboard, id.clone(), &focus, &client);
     // The protocol does not declare the argument as an enum.
     let key_state = if key_state == 1 {
         wl_keyboard::KeyState::Pressed
@@ -384,6 +410,45 @@ where
     };
     for kbd in keyboard.client_keyboards(&client) {
         kbd.key(SERIAL_COUNTER.next_serial().into(), time, key, key_state);
+    }
+    if let Some(kb) = state.virtual_keyboard_bindings().keyboards.get_mut(&id) {
+        if key_state == wl_keyboard::KeyState::Pressed {
+            kb.forwarded.insert(key);
+        } else {
+            kb.forwarded.remove(&key);
+        }
+    }
+}
+
+/// Release whatever a departing virtual keyboard left pressed in the focused
+/// client: `wl_keyboard` has no event for a vanished source, so the key would
+/// stay down — and repeating, client-side — until the window lost focus.
+fn release_forwarded<D>(seat: &Seat<D>, forwarded: &HashSet<u32>)
+where
+    D: SeatHandler + 'static,
+    D::KeyboardFocus: WaylandFocus + Clone,
+{
+    if forwarded.is_empty() {
+        return;
+    }
+    let Some(keyboard) = seat.get_keyboard() else {
+        return;
+    };
+    let Some((_, client)) = focused_client(&keyboard) else {
+        return;
+    };
+    let time = smithay::utils::Clock::<smithay::utils::Monotonic>::new()
+        .now()
+        .as_millis();
+    for kbd in keyboard.client_keyboards(&client) {
+        for key in forwarded {
+            kbd.key(
+                SERIAL_COUNTER.next_serial().into(),
+                time,
+                *key,
+                wl_keyboard::KeyState::Released,
+            );
+        }
     }
 }
 
@@ -406,18 +471,20 @@ where
         return;
     };
     focus.modifiers(seat, state, mods, SERIAL_COUNTER.next_serial());
+    record_virtual_mods(state, &keyboard, mods);
 }
 
-/// Put the seat's keymap back on every `wl_keyboard` a virtual keyboard
-/// switched away from it. Call before forwarding a physical key: smithay
-/// only re-sends a keymap it knows it changed, and it does not know about
-/// these.
+/// Put the seat's keymap and modifiers back on every `wl_keyboard` a virtual
+/// keyboard moved off them. Call before forwarding a physical key: smithay only
+/// re-sends a keymap it knows it changed, and it does not know about these.
+/// The modifiers go back even when no keymap does (see `virtual_mods_sent`).
 pub fn restore_seat_keymap<D>(state: &mut D, seat: &Seat<D>)
 where
     D: SeatHandler + VirtualKeyboardBindingHandler + 'static,
     D::KeyboardFocus: WaylandFocus + Clone,
 {
-    if state.virtual_keyboard_bindings().foreign_keymaps.is_empty() {
+    let bindings = state.virtual_keyboard_bindings();
+    if bindings.foreign_keymaps.is_empty() && !bindings.virtual_mods_sent {
         return;
     }
     let Some(keyboard) = seat.get_keyboard() else {
@@ -425,21 +492,18 @@ where
     };
     let seat_text = seat_keymap(state, &keyboard);
     let records = std::mem::take(&mut state.virtual_keyboard_bindings().foreign_keymaps);
+    state.virtual_keyboard_bindings().virtual_mods_sent = false;
     let held: Vec<WlKeyboard> = records
         .into_iter()
         .filter(|(_, text)| **text != *seat_text)
         .filter_map(|(kbd, _)| kbd.upgrade().ok())
         .collect();
-    if held.is_empty() {
-        return;
-    }
     let bindings = state.virtual_keyboard_bindings();
-    let Some(seat_keymap) = bindings.seat_keymap.as_ref() else {
-        return;
-    };
-    for kbd in held {
-        if let Err(err) = seat_keymap.file.send(&kbd) {
-            tracing::warn!("virtual keyboard: failed to restore the seat keymap: {err}");
+    if let Some(seat_keymap) = bindings.seat_keymap.as_ref() {
+        for kbd in held {
+            if let Err(err) = seat_keymap.file.send(&kbd) {
+                tracing::warn!("virtual keyboard: failed to restore the seat keymap: {err}");
+            }
         }
     }
     if let Some(focus) = keyboard.current_focus() {
@@ -582,10 +646,17 @@ where
     }
 
     fn destroyed(&self, state: &mut D, _client: ClientId, resource: &ZwpVirtualKeyboardV1) {
-        state
+        let Some(kb) = state
             .virtual_keyboard_bindings()
             .keyboards
-            .remove(&resource.id());
+            .remove(&resource.id())
+        else {
+            return;
+        };
+        release_forwarded(&self.seat, &kb.forwarded);
+        // Here rather than at the next physical key, which on a touch-only
+        // device may never come.
+        restore_seat_keymap(state, &self.seat);
     }
 }
 
