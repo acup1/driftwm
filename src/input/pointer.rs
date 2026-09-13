@@ -209,6 +209,10 @@ impl DriftWm {
         if self.space.outputs().next().is_none() {
             return;
         }
+        // A scene change and this press can share one dispatch — a bar unmaps,
+        // the finger lands — and the routing below reads `pointer_over_layer`
+        // and focus, which are only as fresh as the last pull.
+        self.refresh_pointer_focus();
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
 
@@ -1407,6 +1411,9 @@ impl DriftWm {
         if self.space.outputs().next().is_none() {
             return;
         }
+        // A scene change and this scroll can share one dispatch, and the
+        // routing below is only as fresh as the last pull.
+        self.refresh_pointer_focus();
         // When pointer is over a layer surface, forward scroll directly (no pan/zoom)
         if self.pointer_over_layer {
             let pointer = self.seat.get_pointer().unwrap();

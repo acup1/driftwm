@@ -967,17 +967,25 @@ impl DriftWm {
         // A fullscreen entry, or an exit from fullscreen, fit or fill, moves a
         // window before the client commits at the new size, so for a few
         // frames its committed rect is the old size at the new position.
-        // Hit-testing that would un-seat the surface the move put under the
-        // cursor — dropping a game's lock — only to re-seat it a frame later.
-        // The constraint pass still runs: it needs no hit test.
-        if old_focus
-            .as_ref()
-            .is_some_and(|focus| self.focus_holds_through_transition(focus, canvas_pos))
-        {
+        // Delivering against that would un-seat the surface the move put under
+        // the cursor — dropping a game's lock — only to re-seat it a frame
+        // later. The pick runs regardless: it writes `pointer_over_layer`,
+        // which the press and axis paths read before focus. A screen-space
+        // target over the destination rect is real and owes its enter, so it
+        // releases the hold. That flag also covers Bottom/Background layers,
+        // which sit beneath windows — safe only because the fullscreen cull
+        // keeps them out of the pick on entry, and on exit the still-committed
+        // fullscreen rect wins first. The constraint pass needs no fresh
+        // delivery.
+        let under = self.pointer_focus_under_pick(screen_pos, canvas_pos);
+        let holds = !self.pointer_over_screen_space
+            && old_focus
+                .as_ref()
+                .is_some_and(|focus| self.focus_holds_through_transition(focus, canvas_pos));
+        if holds {
             self.update_pointer_constraint(old_focus);
             return;
         }
-        let under = self.pointer_focus_under_pick(screen_pos, canvas_pos);
         let delivered = self.delivered_focus(&pointer, grab, under.clone());
         let focus_unchanged = delivered.as_ref().map(|(focus, _)| focus) == old_focus.as_ref();
         // A lock still holding the surface under the cursor has nothing to

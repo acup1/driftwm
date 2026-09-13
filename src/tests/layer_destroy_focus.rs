@@ -1,9 +1,9 @@
 //! Pointer-focus invariants when a layer appears or disappears under a
-//! stationary cursor: `pointer_over_layer` is only refreshed by pointer
-//! motion, so a layer destroyed (or revealed by a fullscreen exit) beneath a
-//! resting cursor would route the next press/scroll to the canvas instead of
-//! the layer surface under the pointer. The compositor re-seats focus on the
-//! scene change itself, and the tests pin the press to the correct grab.
+//! stationary cursor: `pointer_over_layer` is kept current by the hit test, so
+//! a layer destroyed (or revealed by a fullscreen exit) beneath a resting
+//! cursor would route the next press/scroll to the canvas instead of the layer
+//! surface under the pointer. The per-iteration pull re-picks regardless of
+//! whether it delivers, and the tests pin the press to the correct grab.
 
 use driftwm::config::BTN_LEFT;
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
@@ -129,9 +129,8 @@ fn layer_destroyed_under_the_cursor_keeps_pointer_focus() {
     f.double_roundtrip(id);
 }
 
-/// Exiting fullscreen can restore a hidden bar beneath a stationary cursor:
-/// `enter_fullscreen` forced `pointer_over_layer` to false and nothing
-/// refreshed it until the exit. The exit re-seats focus on the revealed bar.
+/// Exiting fullscreen can restore a hidden bar beneath a stationary cursor.
+/// The pull after the exit re-seats focus on the revealed bar.
 #[test]
 fn fullscreen_exit_reveals_a_bar_under_the_stationary_cursor() {
     let mut f = Fixture::new();
@@ -191,4 +190,163 @@ fn fullscreen_exit_reveals_a_bar_under_the_stationary_cursor() {
     f.client(id).window(&window_surface).destroy();
     f.client(id).layer(&bar).layer_surface.destroy();
     f.double_roundtrip(id);
+}
+
+/// The same reveal, with the cursor also inside the rect the exiting window is
+/// heading for. That engages the pull's transition hold, which keeps the
+/// window's delivery through the client's resize; it must not also keep the
+/// stale routing flag, or the press and scroll that follow go to the window
+/// behind the bar instead of the bar.
+#[test]
+fn fullscreen_exit_over_a_bar_inside_the_restored_rect_still_routes_to_the_bar() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let bar_id = f.add_client();
+    let device = FakeDevice::mouse();
+
+    let window_surface = super::map_window(&mut f, id, "w", (800, 600));
+    let output = f.state().active_output().unwrap();
+    let window = super::window_by_app_id(&mut f, "w").unwrap();
+    // The fixture camera starts at (-960, -540), so a window at the canvas
+    // origin spans screen (960, 540)..(1760, 1140): its bottom edge runs
+    // under a bottom-anchored bar.
+    f.state().map_window(
+        crate::state::StageWindow::Client(window.clone()),
+        Point::from((0, 0)),
+        false,
+    );
+
+    let bar = map_layer(
+        &mut f,
+        bar_id,
+        zwlr_layer_shell_v1::Layer::Top,
+        "bar",
+        (1920, 40),
+        zwlr_layer_surface_v1::Anchor::Bottom
+            | zwlr_layer_surface_v1::Anchor::Left
+            | zwlr_layer_surface_v1::Anchor::Right,
+    );
+
+    // Over the bar's strip *and* inside the window's rect.
+    let cursor = Point::from((1200.0, 1060.0));
+    pointer_to_screen(&mut f, &device, cursor);
+    let bar_server = layer_surface_by_namespace(&mut f, "bar");
+    assert_eq!(
+        pointer_focus(&mut f),
+        Some(bar_server.clone()),
+        "the bar must sit over the window at the cursor's spot, or the exit \
+         reveals nothing"
+    );
+
+    f.state().enter_fullscreen(&window, Some(output.clone()));
+    f.double_roundtrip(id);
+    super::adopt_last_configure(&mut f, id, &window_surface);
+    assert_eq!(
+        pointer_focus(&mut f),
+        Some(super::server_surface(&window)),
+        "the fullscreen window owns focus while the bar is hidden beneath it"
+    );
+
+    // Do not answer the resize: with the fullscreen-sized buffer still held,
+    // the recentre stays owed and the hold engages on every pull.
+    f.state().exit_fullscreen_on(&output);
+    f.double_roundtrip(id);
+    assert!(
+        !f.state().pending_recenter.is_empty(),
+        "the exit must leave a recentre owed, or the hold never engages and \
+         this scenario tests the plain reveal"
+    );
+
+    let bar_buttons_before = f.client(bar_id).state.pointer_buttons.len();
+    let window_buttons_before = f.client(id).state.pointer_buttons.len();
+    press(&mut f, &device, BTN_LEFT);
+    assert_click_grab(
+        &mut f,
+        "the press must hit the revealed bar, not pan the canvas or raise the \
+         window behind it",
+    );
+    release(&mut f, &device, BTN_LEFT);
+    f.double_roundtrip(bar_id);
+    f.double_roundtrip(id);
+    assert!(
+        f.client(bar_id).state.pointer_buttons.len() > bar_buttons_before,
+        "the bar's client must see the press"
+    );
+    assert_eq!(
+        f.client(id).state.pointer_buttons.len(),
+        window_buttons_before,
+        "the window behind the bar must not see the press"
+    );
+
+    let camera_before = f.state().camera();
+    let bar_axes_before = f.client(bar_id).state.pointer_axes.len();
+    super::input_backend::trackpad_scroll(&mut f, &device);
+    f.double_roundtrip(bar_id);
+    assert_eq!(
+        f.state().camera(),
+        camera_before,
+        "a scroll over the bar must reach the bar, not pan the canvas"
+    );
+    assert!(
+        f.client(bar_id).state.pointer_axes.len() > bar_axes_before,
+        "the bar's client must see the scroll"
+    );
+
+    f.client(id).window(&window_surface).destroy();
+    f.client(bar_id).layer(&bar).layer_surface.destroy();
+    f.double_roundtrip(id);
+    f.double_roundtrip(bar_id);
+}
+
+/// The reveal and the press in one dispatch: no pull runs between the exit
+/// and the finger landing, so the press has to make focus current itself or
+/// it routes on the previous iteration's answer — the window, not the bar.
+#[test]
+fn a_press_in_the_same_dispatch_as_the_reveal_still_reaches_the_bar() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let bar_id = f.add_client();
+    let device = FakeDevice::mouse();
+
+    let window_surface = super::map_window(&mut f, id, "w", (800, 600));
+    let output = f.state().active_output().unwrap();
+    let window = super::window_by_app_id(&mut f, "w").unwrap();
+
+    let bar = map_layer(
+        &mut f,
+        bar_id,
+        zwlr_layer_shell_v1::Layer::Top,
+        "bar",
+        (1920, 40),
+        zwlr_layer_surface_v1::Anchor::Bottom
+            | zwlr_layer_surface_v1::Anchor::Left
+            | zwlr_layer_surface_v1::Anchor::Right,
+    );
+
+    let over_bar = Point::from((960.0, 1060.0));
+    pointer_to_screen(&mut f, &device, over_bar);
+    f.state().enter_fullscreen(&window, Some(output.clone()));
+    f.double_roundtrip(id);
+    super::adopt_last_configure(&mut f, id, &window_surface);
+    assert_eq!(
+        pointer_focus(&mut f),
+        Some(super::server_surface(&window)),
+        "the fullscreen window owns focus while the bar is hidden beneath it"
+    );
+
+    // No roundtrip between these two: the exit and the press share a dispatch.
+    f.state().exit_fullscreen_on(&output);
+    press(&mut f, &device, BTN_LEFT);
+    assert_click_grab(
+        &mut f,
+        "a press landing in the same dispatch as the reveal must still reach the bar",
+    );
+    release(&mut f, &device, BTN_LEFT);
+
+    f.client(id).window(&window_surface).destroy();
+    f.client(bar_id).layer(&bar).layer_surface.destroy();
+    f.double_roundtrip(id);
+    f.double_roundtrip(bar_id);
 }

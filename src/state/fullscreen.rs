@@ -217,8 +217,6 @@ impl DriftWm {
             os.momentum.stop();
             os.overview_return = None;
         }
-        // Top/Bottom layers are hidden during fullscreen — reset stale pointer state
-        self.pointer_over_layer = false;
 
         // Snap camera to integer for pixel-perfect alignment. Write the
         // output's state directly: `set_camera` refuses to move a fullscreen

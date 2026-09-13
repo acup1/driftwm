@@ -50,7 +50,11 @@ fn pull_cost_bench() {
     );
     f.double_roundtrip(id);
 
-    let iterations = 10_000u32;
+    // Runs on every CI pass: `--include-ignored` defeats the `#[ignore]`, and
+    // a "soak" name would land it in the fd/RSS plateau run. Enough to average
+    // out scheduler noise, not enough to be worth skipping; raise it locally
+    // when re-measuring.
+    let iterations = 1_000u32;
     let per_iteration = |f: &mut Fixture| {
         let start = Instant::now();
         for _ in 0..iterations {
