@@ -56,6 +56,13 @@ use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constra
     Lifetime, ZwpPointerConstraintsV1,
 };
 use wayland_protocols::wp::single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1;
+use wayland_protocols::wp::tablet::zv2::client::{
+    zwp_tablet_manager_v2::ZwpTabletManagerV2,
+    zwp_tablet_pad_v2::ZwpTabletPadV2,
+    zwp_tablet_seat_v2::{self, ZwpTabletSeatV2},
+    zwp_tablet_tool_v2::{self, ZwpTabletToolV2},
+    zwp_tablet_v2::ZwpTabletV2,
+};
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use wayland_protocols::xdg::activation::v1::client::xdg_activation_token_v1::{
@@ -112,6 +119,7 @@ pub struct State {
     pub xdg_activation: Option<XdgActivationV1>,
     pub ext_session_lock_manager: Option<ExtSessionLockManagerV1>,
     pub virtual_keyboard_manager: Option<ZwpVirtualKeyboardManagerV1>,
+    pub tablet_manager: Option<ZwpTabletManagerV2>,
 
     pub windows: Vec<Window>,
     pub layers: Vec<LayerSurface>,
@@ -138,6 +146,9 @@ pub struct State {
     /// Every `wl_keyboard` event this client's keyboard has received, oldest
     /// first.
     pub keyboard_events: Vec<KeyboardEvent>,
+    /// Every `zwp_tablet_tool_v2` event this client has received, oldest
+    /// first. Empty until [`Client::get_tablet_seat`] runs.
+    pub tablet_tool_events: Vec<TabletToolEvent>,
 
     /// The token string from the most recent `xdg_activation_token_v1.done`.
     pub activation_token: Option<String>,
@@ -310,6 +321,47 @@ pub enum KeyboardEvent {
     },
 }
 
+/// A `zwp_tablet_tool_v2` event as a tablet-aware client sees it. `Frame` is
+/// recorded like the rest: the protocol makes everything before a frame one
+/// hardware event, so where the frames fall is part of what a stroke looks
+/// like. Serials, the tablet object and the hardware ids are not kept.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TabletToolEvent {
+    Type(u32),
+    Capability(u32),
+    Done,
+    Removed,
+    ProximityIn {
+        surface: WlSurface,
+    },
+    ProximityOut,
+    Down,
+    Up,
+    /// Surface-local.
+    Motion {
+        x: f64,
+        y: f64,
+    },
+    /// Normalised to `0..=65535` by the protocol.
+    Pressure(u32),
+    Distance(u32),
+    Tilt {
+        x: f64,
+        y: f64,
+    },
+    Rotation(f64),
+    Slider(i32),
+    Wheel {
+        degrees: f64,
+        clicks: i32,
+    },
+    Button {
+        button: u32,
+        state: u32,
+    },
+    Frame,
+}
+
 pub struct LockSurface {
     pub qh: QueueHandle<State>,
     pub spbm: WpSinglePixelBufferManagerV1,
@@ -467,6 +519,7 @@ impl Client {
             xdg_activation: None,
             ext_session_lock_manager: None,
             virtual_keyboard_manager: None,
+            tablet_manager: None,
             windows: Vec::new(),
             layers: Vec::new(),
             popups: Vec::new(),
@@ -477,6 +530,7 @@ impl Client {
             pointer_buttons: Vec::new(),
             pointer_axes: Vec::new(),
             keyboard_events: Vec::new(),
+            tablet_tool_events: Vec::new(),
             activation_token: None,
             ext_workspace: ExtWorkspace::default(),
         };
@@ -783,6 +837,24 @@ impl Client {
         let keyboard = manager.create_virtual_keyboard(seat, &self.qh, ());
         self.connection.flush().unwrap();
         keyboard
+    }
+
+    /// `zwp_tablet_manager_v2.get_tablet_seat` on this client's seat, from
+    /// which point the compositor announces tablets and tools to it. Not sent
+    /// at bind time, so a scenario can make it after the pen is already over
+    /// its window.
+    pub fn get_tablet_seat(&mut self) -> ZwpTabletSeatV2 {
+        let manager = self.state.tablet_manager.as_ref().unwrap();
+        let seat = self.state.seat.as_ref().unwrap();
+        let tablet_seat = manager.get_tablet_seat(seat, &self.qh, ());
+        self.connection.flush().unwrap();
+        tablet_seat
+    }
+
+    /// Take the log, so the tool announce and any hover before the stroke a
+    /// scenario cares about can be dropped.
+    pub fn drain_tablet_tool_events(&mut self) -> Vec<TabletToolEvent> {
+        std::mem::take(&mut self.state.tablet_tool_events)
     }
 
     /// Upload `text` as `keyboard`'s XKB keymap through a temp file, flushed
@@ -1697,6 +1769,9 @@ impl Dispatch<WlRegistry, ()> for State {
                 } else if interface == ZwpVirtualKeyboardManagerV1::interface().name {
                     let version = min(version, ZwpVirtualKeyboardManagerV1::interface().version);
                     state.virtual_keyboard_manager = Some(registry.bind(name, version, qh, ()));
+                } else if interface == ZwpTabletManagerV2::interface().name {
+                    let version = min(version, ZwpTabletManagerV2::interface().version);
+                    state.tablet_manager = Some(registry.bind(name, version, qh, ()));
                 }
 
                 let global = Global {
@@ -2432,5 +2507,123 @@ impl Dispatch<ZwpVirtualKeyboardV1, ()> for State {
         _qhandle: &QueueHandle<Self>,
     ) {
         unreachable!()
+    }
+}
+
+impl Dispatch<ZwpTabletManagerV2, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpTabletManagerV2,
+        _event: <ZwpTabletManagerV2 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        unreachable!()
+    }
+}
+
+impl Dispatch<ZwpTabletSeatV2, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpTabletSeatV2,
+        event: <ZwpTabletSeatV2 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        // The new objects need no bookkeeping: what the tool then reports is
+        // recorded on the tool itself.
+        match event {
+            zwp_tablet_seat_v2::Event::TabletAdded { .. } => (),
+            zwp_tablet_seat_v2::Event::ToolAdded { .. } => (),
+            zwp_tablet_seat_v2::Event::PadAdded { .. } => (),
+            _ => unreachable!(),
+        }
+    }
+
+    wayland_client::event_created_child!(State, ZwpTabletSeatV2, [
+        zwp_tablet_seat_v2::EVT_TABLET_ADDED_OPCODE => (ZwpTabletV2, ()),
+        zwp_tablet_seat_v2::EVT_TOOL_ADDED_OPCODE => (ZwpTabletToolV2, ()),
+        zwp_tablet_seat_v2::EVT_PAD_ADDED_OPCODE => (ZwpTabletPadV2, ()),
+    ]);
+}
+
+impl Dispatch<ZwpTabletV2, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpTabletV2,
+        _event: <ZwpTabletV2 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        // The tablet's announce (name, ids, path, done); the scenarios read
+        // the tool, not the tablet it is on.
+    }
+}
+
+impl Dispatch<ZwpTabletToolV2, ()> for State {
+    fn event(
+        state: &mut Self,
+        _proxy: &ZwpTabletToolV2,
+        event: <ZwpTabletToolV2 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        let recorded = match event {
+            zwp_tablet_tool_v2::Event::Type { tool_type } => {
+                TabletToolEvent::Type(u32::from(tool_type))
+            }
+            zwp_tablet_tool_v2::Event::HardwareSerial { .. }
+            | zwp_tablet_tool_v2::Event::HardwareIdWacom { .. } => return,
+            zwp_tablet_tool_v2::Event::Capability { capability } => {
+                TabletToolEvent::Capability(u32::from(capability))
+            }
+            zwp_tablet_tool_v2::Event::Done => TabletToolEvent::Done,
+            zwp_tablet_tool_v2::Event::Removed => TabletToolEvent::Removed,
+            zwp_tablet_tool_v2::Event::ProximityIn { surface, .. } => {
+                TabletToolEvent::ProximityIn { surface }
+            }
+            zwp_tablet_tool_v2::Event::ProximityOut => TabletToolEvent::ProximityOut,
+            zwp_tablet_tool_v2::Event::Down { .. } => TabletToolEvent::Down,
+            zwp_tablet_tool_v2::Event::Up => TabletToolEvent::Up,
+            zwp_tablet_tool_v2::Event::Motion { x, y } => TabletToolEvent::Motion { x, y },
+            zwp_tablet_tool_v2::Event::Pressure { pressure } => TabletToolEvent::Pressure(pressure),
+            zwp_tablet_tool_v2::Event::Distance { distance } => TabletToolEvent::Distance(distance),
+            zwp_tablet_tool_v2::Event::Tilt { tilt_x, tilt_y } => TabletToolEvent::Tilt {
+                x: tilt_x,
+                y: tilt_y,
+            },
+            zwp_tablet_tool_v2::Event::Rotation { degrees } => TabletToolEvent::Rotation(degrees),
+            zwp_tablet_tool_v2::Event::Slider { position } => TabletToolEvent::Slider(position),
+            zwp_tablet_tool_v2::Event::Wheel { degrees, clicks } => {
+                TabletToolEvent::Wheel { degrees, clicks }
+            }
+            zwp_tablet_tool_v2::Event::Button {
+                button, state: s, ..
+            } => TabletToolEvent::Button {
+                button,
+                state: u32::from(s),
+            },
+            zwp_tablet_tool_v2::Event::Frame { .. } => TabletToolEvent::Frame,
+            _ => unreachable!(),
+        };
+        state.tablet_tool_events.push(recorded);
+    }
+}
+
+impl Dispatch<ZwpTabletPadV2, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpTabletPadV2,
+        _event: <ZwpTabletPadV2 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        // Bound only so `pad_added` has a target; the compositor exposes no
+        // pads and no scenario reads one.
     }
 }
