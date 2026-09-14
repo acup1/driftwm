@@ -747,6 +747,75 @@ fn a_window_that_left_a_stationary_cursor_under_an_open_menu_is_not_re_entered_o
     );
 }
 
+/// As above, with the bystander's move and the menu's dismiss landing in the
+/// same dispatch: the pull that finds the grab ended is the first to see the
+/// bystander gone, and the restore must still not enter it.
+#[test]
+fn a_window_that_leaves_in_the_dismissing_dispatch_is_not_re_entered_either() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let menu_owner = f.add_client();
+    let bystander = f.add_client();
+    let device = FakeDevice::mouse();
+
+    map_window(&mut f, bystander, "bystander", (400, 300));
+    let bystander_window = window_by_app_id(&mut f, "bystander").unwrap();
+    let bystander_centre = (700, 0);
+    dispatch(
+        Request::Move {
+            window: Some(WindowSelector::AppId("bystander".into())),
+            to: Some(bystander_centre),
+        },
+        f.state(),
+    )
+    .unwrap();
+    f.roundtrip(bystander);
+    let bystander_pos = f
+        .state()
+        .stage
+        .position_of(&bystander_window)
+        .unwrap()
+        .to_f64();
+    let (_parent_window, _parent_pos, _cursor, popup_surface) =
+        setup_grabbed_popup_over_stationary_cursor(&mut f, menu_owner, &device);
+
+    let cursor = bystander_pos + Point::from((50.0, 50.0));
+    pointer_to(&mut f, &device, cursor);
+    f.roundtrip(bystander);
+    assert_eq!(
+        f.state().surface_under(cursor, None).map(|(t, _)| t.0),
+        Some(server_surface(&bystander_window)),
+        "test setup bug: the cursor must rest on the bystander"
+    );
+    let positions_before = f.client(bystander).state.pointer_positions.len();
+
+    // Queued client-side until the roundtrip below; the move lands first on
+    // the server, so one dispatch processes both.
+    f.client(menu_owner).popup(&popup_surface).destroy();
+    dispatch(
+        Request::Move {
+            window: Some(WindowSelector::AppId("bystander".into())),
+            to: Some((bystander_centre.0 + 2000, bystander_centre.1)),
+        },
+        f.state(),
+    )
+    .unwrap();
+    f.double_roundtrip(menu_owner);
+    f.pump(3);
+    f.roundtrip(bystander);
+
+    assert!(
+        pointer_focus(&mut f).is_none(),
+        "the cursor rests on bare canvas once the menu is gone"
+    );
+    assert_eq!(
+        f.client(bystander).state.pointer_positions.len(),
+        positions_before,
+        "a dismiss in the same dispatch as the bystander's departure must \
+         not re-enter it"
+    );
+}
+
 /// A persistent confine whose region is re-set around the parked cursor arms
 /// on the next pull with no motion delivered.
 #[test]

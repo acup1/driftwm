@@ -850,10 +850,12 @@ impl DriftWm {
         });
         match kinds {
             None => PointerGrabKind::Free,
-            // The pointer grab outlives driftwm's own teardown by one idle
-            // (`tear_down_popup_grab` defers the ungrab); until that runs the
-            // grab is nobody's to dispatch through.
             Some((true, _)) if self.popup_grab.is_some() => PointerGrabKind::Popup,
+            // The pointer grab outlives driftwm's own teardown by one idle
+            // (`tear_down_popup_grab` defers the ungrab). Dispatched into, the
+            // dead grab unsets itself and restores focus from the `under` it
+            // is handed, so it delivers as no grab does.
+            Some((true, _)) => PointerGrabKind::Free,
             Some((_, true)) => PointerGrabKind::Click,
             Some(_) => PointerGrabKind::Other,
         }
@@ -939,23 +941,24 @@ impl DriftWm {
         // carried motion in `warp_pointer` drive those, and the first pull after
         // the release repicks. A popup grab forwards what it is handed and does
         // nothing else while live, so a menu keeps its hover state as things
-        // move under a stationary cursor. Once ended it is torn down here rather
-        // than dispatched into: smithay's own teardown would unset the keyboard
-        // grab and rewrite keyboard focus from inside the pointer dispatch.
-        let grab = self.pointer_grab_kind(&pointer);
-        match grab {
-            PointerGrabKind::Other | PointerGrabKind::Click => return,
-            PointerGrabKind::Popup
-                if self.popup_grab.as_ref().is_some_and(|g| g.grab.has_ended()) =>
-            {
-                let serial = SERIAL_COUNTER.next_serial();
-                self.tear_down_popup_grab();
-                // The grab held keyboard focus on the popup, and unsetting it
-                // restores nothing; re-derive so keys reach the toplevel again.
-                self.update_keyboard_focus(serial);
-                return;
-            }
-            _ => {}
+        // move under a stationary cursor. Once ended, driftwm's own teardown
+        // runs first — smithay's would unset the keyboard grab and rewrite
+        // keyboard focus from inside the pointer dispatch — and the pick then
+        // goes through the dead grab, so the focus it restores is this pick,
+        // not the one before the scene changed.
+        let mut grab = self.pointer_grab_kind(&pointer);
+        if grab == PointerGrabKind::Popup
+            && self.popup_grab.as_ref().is_some_and(|g| g.grab.has_ended())
+        {
+            let serial = SERIAL_COUNTER.next_serial();
+            self.tear_down_popup_grab();
+            // The grab held keyboard focus on the popup, and unsetting it
+            // restores nothing; re-derive so keys reach the toplevel again.
+            self.update_keyboard_focus(serial);
+            grab = self.pointer_grab_kind(&pointer);
+        }
+        if matches!(grab, PointerGrabKind::Other | PointerGrabKind::Click) {
+            return;
         }
         let canvas_pos = pointer.current_location();
         let screen_pos = driftwm::canvas::canvas_to_screen(

@@ -17,15 +17,6 @@ here. Line numbers drift; re-verify on pickup. Profiling tooling:
   `focus_cascade` return a `PointerPick { under, over_layer, over_screen_space }`
   so the classification travels with the result, have `pointer_focus_under_pick`
   assign the fields, and delete `focus_under`.
-- **A menu dismissed in the same iteration as a scene change restores stale
-  focus.** The pull's `has_ended` arm tears the popup grab down before the
-  pick, so smithay's `pending_focus` is what the previous iteration's pull
-  wrote; a foreign surface that moved away in this very iteration is
-  re-entered for one flush by the deferred `unset_grab`. One iteration wide;
-  the pull corrects it next. Closing it means re-picking in the teardown idle
-  and handing `pointer.motion(under)` to the dead grab, whose own `motion`
-  restores from the fresh `under` — inside the pointer dispatch, which is what
-  the arm avoids. Probably not worth it.
 - **The pull refreshes `wl_pointer`, not the tablet tool's own focus.** A window
   closing or moving under a *resting* pen leaves `tool.down` aimed at the tool's
   cached surface until the pen moves. Low; the pen's next event corrects it.
