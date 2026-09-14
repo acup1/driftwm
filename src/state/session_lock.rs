@@ -320,10 +320,10 @@ impl DriftWm {
 
     fn arm_lock_confirm_timer(&mut self, lock: ExtSessionLockV1) {
         // Repeating, not one-shot: blanking an output only *requests* DPMS off,
-        // and any input undoes that request before the drain runs
-        // (`wake_dpms_off_outputs` fires ahead of the locked-input gate), which
-        // re-lights the output instead of clearing it. A retired timer would
-        // leave that output awaited forever. The token is dropped by
+        // and a client's own power request can undo that before the drain
+        // runs, re-lighting the output instead of clearing it (input cannot:
+        // its wake is gated on the confirmation). A retired timer would leave
+        // that output awaited forever. The token is dropped by
         // `finish_lock_confirmation` and the cancel paths, whose identity check
         // is what keeps re-arming from ever confirming a later client's lock.
         let timer = self.loop_handle.insert_source(

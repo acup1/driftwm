@@ -279,6 +279,20 @@ impl SessionLock {
         )
     }
 
+    /// Whether `locked` is still being withheld for outputs that owe a lock
+    /// frame. Input must not re-light a panel meanwhile: the backstop blanks
+    /// an output that never presents, and a wake would undo that blank before
+    /// it lands, re-arming the backstop with every keystroke.
+    pub fn confirmation_pending(&self) -> bool {
+        matches!(
+            self,
+            SessionLock::Locked {
+                pending_confirmation: Some(_),
+                ..
+            }
+        )
+    }
+
     /// The lock object of the client that owns the session, pending or
     /// confirmed. Identifies the incumbent: whether it is still alive, and which
     /// client may put surfaces on the lock.

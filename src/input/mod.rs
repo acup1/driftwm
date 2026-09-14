@@ -367,7 +367,7 @@ impl DriftWm {
             InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. }
         ) {
             self.idle_notifier_state.notify_activity(&self.seat);
-            if !is_interaction_tail(&event) {
+            if !is_interaction_tail(&event) && !self.session_lock.confirmation_pending() {
                 self.wake_dpms_off_outputs();
             }
         }

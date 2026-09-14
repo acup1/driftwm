@@ -1508,6 +1508,41 @@ fn locked_is_withheld_until_the_sole_active_output_presents_a_lock_frame() {
     );
 }
 
+/// Input holds off re-lighting DPMS-off panels for exactly as long as `locked`
+/// is withheld — see [`SessionLock::confirmation_pending`] for why. Only that
+/// predicate is covered: `set_dpms` returns early without a seat session and
+/// no fixture has one, so neither the wake nor the gate in
+/// `process_input_event` can be observed from here.
+#[test]
+fn dpms_wake_is_withheld_while_locked_is() {
+    let mut f = Fixture::new();
+    f.skip_baseline_check();
+    let output = f.add_output(1, (1920, 1080));
+    f.state().active_outputs.insert(output.clone());
+    let id = f.add_client();
+
+    f.client(id).lock_session();
+    f.roundtrip(id);
+    assert!(
+        !f.state().session_lock.confirmation_pending(),
+        "precondition: no lock surface has committed, so nothing is being \
+         confirmed yet"
+    );
+
+    confirm_lock(&mut f, id, &output);
+    assert!(
+        f.state().session_lock.confirmation_pending(),
+        "while the sole active output owes a lock frame, input must not wake \
+         a panel the backstop is blanking"
+    );
+
+    f.state().stop_awaiting_lock_frame(&output);
+    assert!(
+        !f.state().session_lock.confirmation_pending(),
+        "once locked has been sent, input re-lights panels again"
+    );
+}
+
 /// The counterpart of
 /// [`locked_is_withheld_until_the_sole_active_output_presents_a_lock_frame`]
 /// with two outputs: one reporting in must not be mistaken for all of them.

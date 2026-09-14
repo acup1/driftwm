@@ -30,16 +30,14 @@ here. Line numbers drift; re-verify on pickup. Profiling tooling:
 - **Keyboard reaches the lock surface before `locked` is sent.** `enter_locked`
   focuses the lock surface while `pending_confirmation` is still `Some`, and
   every lock-surface commit in `Locked` does too. On the backstop path (an
-  output that never presents) the user types into a visible prompt for a second
-  or more; each keystroke runs `wake_dpms_off_outputs` ahead of the locked-input
-  gate and cancels the very DPMS blank the backstop uses to get a present, and
-  when the password lands the locker's `unlock_and_destroy` meets
-  `invalid_unlock`. Two candidate fixes, neither taken yet: (a) hand focus over
-  only from `finish_lock_confirmation`, after `locker.lock()` — cost is a prompt
-  that is deaf for one refresh normally and for the backstop second on a broken
-  output; (b) narrower, and probably right: stop keystrokes waking DPMS while
-  `pending_confirmation` is `Some`, so the backstop completes and focus stays.
-  Decide before touching; the no-flash guarantee is not up for negotiation.
+  output that never presents) the user types into a visible prompt for up to a
+  second, and a password landing inside that second meets `invalid_unlock` on
+  the locker's `unlock_and_destroy`. Input does not re-light panels while the
+  confirmation is pending, so the backstop's blank lands and the window is
+  bounded by `LOCK_CONFIRM_TIMEOUT`; what remains is the second itself. The
+  only closer is handing focus over from `finish_lock_confirmation`, after
+  `locker.lock()` — a prompt deaf for one refresh normally and for the backstop
+  second on a broken output. The no-flash guarantee is not up for negotiation.
 - **Immediate confirmation on dead-lock takeover.** The replacement path
   re-enters `Pending` and re-awaits surfaces and presents, up to a second of
   extra `locked` latency for the new locker; lock frames are already on every
