@@ -27,7 +27,7 @@ use wayland_protocols::ext::session_lock::v1::client::ext_session_lock_v1;
 use crate::state::session_lock::PENDING_LOCK_DEADLINE;
 use crate::state::{SessionLock, StageWindow};
 
-use super::client::{ClientId, LockEvent, TouchEvent};
+use super::client::{ClientId, IdleEvent, LockEvent, TouchEvent};
 use super::input_backend::{
     FakeDevice, pointer_relative_motion, pointer_to, pointer_to_screen, touch_cancel, touch_down,
     touch_motion, touch_up,
@@ -902,6 +902,41 @@ fn an_output_going_dark_during_pending_stops_the_desktop_being_painted() {
         "an output going dark mid-wait must stop the desktop being painted — \
          the input that wakes the panel would otherwise light it straight onto \
          whatever this `Pending` is showing"
+    );
+}
+
+/// An idle notification that fired during the lock resumes at the unlock, with
+/// no input involved — see the comment in `SessionLockHandler::unlock`. The
+/// DPMS half of the same wake is unobservable here: `set_dpms` returns early
+/// without a seat session, and no fixture has one.
+#[test]
+fn unlocking_resumes_an_idle_notification_without_any_input() {
+    let mut f = Fixture::new();
+    let output = f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    f.client(id).lock_session();
+    f.roundtrip(id);
+    confirm_lock(&mut f, id, &output);
+
+    f.client(id).get_idle_notification(1);
+    f.roundtrip(id);
+    std::thread::sleep(Duration::from_millis(20));
+    f.pump(3);
+    f.roundtrip(id);
+    assert_eq!(
+        f.client(id).state.idle_events,
+        vec![IdleEvent::Idled],
+        "precondition: the notification fired while the session sat locked"
+    );
+
+    f.client(id).unlock_session();
+    f.double_roundtrip(id);
+
+    assert_eq!(
+        f.client(id).state.idle_events,
+        vec![IdleEvent::Idled, IdleEvent::Resumed],
+        "the unlock itself must count as activity"
     );
 }
 

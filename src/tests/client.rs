@@ -36,6 +36,10 @@ use wayland_client::protocol::wl_shm_pool::WlShmPool;
 use wayland_client::protocol::wl_surface::{self, WlSurface};
 use wayland_client::protocol::wl_touch::{self, WlTouch};
 use wayland_client::{Connection, Dispatch, Proxy as _, QueueHandle, WEnum};
+use wayland_protocols::ext::idle_notify::v1::client::{
+    ext_idle_notification_v1::{self, ExtIdleNotificationV1},
+    ext_idle_notifier_v1::ExtIdleNotifierV1,
+};
 use wayland_protocols::ext::session_lock::v1::client::{
     ext_session_lock_manager_v1::ExtSessionLockManagerV1,
     ext_session_lock_surface_v1::{self, ExtSessionLockSurfaceV1},
@@ -118,6 +122,7 @@ pub struct State {
     pub pointer_constraints: Option<ZwpPointerConstraintsV1>,
     pub xdg_activation: Option<XdgActivationV1>,
     pub ext_session_lock_manager: Option<ExtSessionLockManagerV1>,
+    pub idle_notifier: Option<ExtIdleNotifierV1>,
     pub virtual_keyboard_manager: Option<ZwpVirtualKeyboardManagerV1>,
     pub tablet_manager: Option<ZwpTabletManagerV2>,
 
@@ -127,6 +132,9 @@ pub struct State {
     pub session_locks: Vec<Lock>,
     /// Every `wl_touch` event this client has received, oldest first.
     pub touch_events: Vec<TouchEvent>,
+    /// Every `idled`/`resumed` this client's idle notifications have received,
+    /// oldest first.
+    pub idle_events: Vec<IdleEvent>,
     /// Surface-local position carried by every `wl_pointer` enter/motion this
     /// client has received, oldest first.
     pub pointer_positions: Vec<(f64, f64)>,
@@ -295,6 +303,12 @@ pub struct Lock {
 pub enum LockEvent {
     Locked,
     Finished,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleEvent {
+    Idled,
+    Resumed,
 }
 
 /// A `wl_touch` event, recorded without its payload — these scenarios only
@@ -518,6 +532,7 @@ impl Client {
             pointer_constraints: None,
             xdg_activation: None,
             ext_session_lock_manager: None,
+            idle_notifier: None,
             virtual_keyboard_manager: None,
             tablet_manager: None,
             windows: Vec::new(),
@@ -525,6 +540,7 @@ impl Client {
             popups: Vec::new(),
             session_locks: Vec::new(),
             touch_events: Vec::new(),
+            idle_events: Vec::new(),
             pointer_positions: Vec::new(),
             pointer_frames: 0,
             pointer_buttons: Vec::new(),
@@ -749,6 +765,15 @@ impl Client {
         rects: &[(i32, i32, i32, i32)],
     ) {
         self.state.set_confine_region(confine, rects);
+    }
+
+    /// Ask to be told when the seat has been idle for `timeout_ms`
+    /// (`ext_idle_notifier_v1.get_idle_notification`); the `idled`/`resumed`
+    /// events land in [`State::idle_events`].
+    pub fn get_idle_notification(&mut self, timeout_ms: u32) -> ExtIdleNotificationV1 {
+        let notifier = self.state.idle_notifier.as_ref().unwrap();
+        let seat = self.state.seat.as_ref().unwrap();
+        notifier.get_idle_notification(timeout_ms, seat, &self.state.qh, ())
     }
 
     /// Send `ext_session_lock_manager_v1.lock`, entering
@@ -1766,6 +1791,9 @@ impl Dispatch<WlRegistry, ()> for State {
                 } else if interface == ExtSessionLockManagerV1::interface().name {
                     let version = min(version, ExtSessionLockManagerV1::interface().version);
                     state.ext_session_lock_manager = Some(registry.bind(name, version, qh, ()));
+                } else if interface == ExtIdleNotifierV1::interface().name {
+                    let version = min(version, ExtIdleNotifierV1::interface().version);
+                    state.idle_notifier = Some(registry.bind(name, version, qh, ()));
                 } else if interface == ZwpVirtualKeyboardManagerV1::interface().name {
                     let version = min(version, ZwpVirtualKeyboardManagerV1::interface().version);
                     state.virtual_keyboard_manager = Some(registry.bind(name, version, qh, ()));
@@ -2378,6 +2406,36 @@ impl Dispatch<XdgPopup, ()> for State {
             }
             xdg_popup::Event::PopupDone => popup.popup_done = true,
             xdg_popup::Event::Repositioned { .. } => (),
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl Dispatch<ExtIdleNotifierV1, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ExtIdleNotifierV1,
+        _event: <ExtIdleNotifierV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        unreachable!()
+    }
+}
+
+impl Dispatch<ExtIdleNotificationV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        _proxy: &ExtIdleNotificationV1,
+        event: <ExtIdleNotificationV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        match event {
+            ext_idle_notification_v1::Event::Idled => state.idle_events.push(IdleEvent::Idled),
+            ext_idle_notification_v1::Event::Resumed => state.idle_events.push(IdleEvent::Resumed),
             _ => unreachable!(),
         }
     }

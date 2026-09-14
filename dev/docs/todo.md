@@ -46,8 +46,6 @@ here. Line numbers drift; re-verify on pickup. Profiling tooling:
   output, so confirming at once is sound. Only if the keyboard-handoff reason
   given in the takeover arm's comment is not load-bearing — the commit arm
   already hands a late surface the keyboard from `Locked`.
-- **`unlock` neither wakes DPMS-off outputs nor notifies idle.** A remote
-  `loginctl unlock-session` leaves a blanked panel dark until input.
 
 ## Virtual keyboard
 

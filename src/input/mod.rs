@@ -320,7 +320,7 @@ impl DriftWm {
         tracing::info!("hot-corner fired: {:?} on {}", entered, output_name);
         self.execute_action(&action);
     }
-    fn wake_dpms_off_outputs(&mut self) {
+    pub(crate) fn wake_dpms_off_outputs(&mut self) {
         if self.dpms_off_outputs.is_empty() {
             return;
         }

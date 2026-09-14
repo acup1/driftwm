@@ -1346,6 +1346,11 @@ impl SessionLockHandler for DriftWm {
         self.touch_state.lock_slots.clear();
         // Restore focus to the window (or layer) that owned it before locking.
         self.update_keyboard_focus(smithay::utils::SERIAL_COUNTER.next_serial());
+        // An unlock that came through no input path — a fingerprint reader, a
+        // remote `loginctl unlock-session` — would otherwise leave a blanked
+        // panel dark and the idle timer running into the desktop it revealed.
+        self.idle_notifier_state.notify_activity(&self.seat);
+        self.wake_dpms_off_outputs();
         self.mark_all_dirty();
     }
 
