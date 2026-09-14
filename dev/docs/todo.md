@@ -97,11 +97,6 @@ Everything below is worth doing only if that bump is far off.
   before the grab installs; smithay has no per-slot cancel, so the `up` is the
   candidate. Toolkits tolerate the stale point; a canvas app mid-stroke may
   not.
-- **`add_wp_tablet` destroys and recreates an already-known tablet.** A repeat
-  `DeviceAdded` for the same descriptor (session resume, libinput
-  re-enumeration) reads to clients as remove + add. The tool path is already
-  guarded with `get_tool().unwrap_or_else(add_wp_tool)`; gate the tablet the
-  same way.
 - **Upstream: a client binding tablet-v2 while the pen is already in proximity
   gets `proximity_in` and `frame` but no position** — smithay's late-bind path
   carries a literal TODO for axis, motion and button. The client knows it is in

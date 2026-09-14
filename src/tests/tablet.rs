@@ -13,7 +13,7 @@ use smithay::utils::{Logical, Point};
 
 use driftwm::config::BTN_LEFT;
 
-use super::client::{ClientId, TabletToolEvent};
+use super::client::{ClientId, TabletEvent, TabletToolEvent};
 use super::input_backend::{
     FakeDevice, FakeTabletAxes, pen_proximity_in, pen_proximity_in_screen, pen_tip_down,
     pen_tip_up, pen_to, pen_to_screen_with, pen_to_with, tablet_added, tablet_removed, touch_down,
@@ -432,6 +432,34 @@ fn tablet_client_with_window(
     let window = window_by_app_id(f, "canvas").unwrap();
     let origin = f.state().stage.position_of(&window).unwrap().to_f64();
     (id, surface, origin)
+}
+
+/// A repeat `DeviceAdded` for a known tablet (a session resume, a libinput
+/// re-enumeration) must not read to clients as an unplug and a replug.
+#[test]
+fn a_repeated_device_add_does_not_replace_a_known_tablet() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    f.client(id).get_tablet_seat();
+    f.roundtrip(id);
+
+    let device = FakeDevice::tablet();
+    tablet_added(&mut f, &device);
+    f.roundtrip(id);
+    assert_eq!(
+        f.client(id).state.tablet_events,
+        vec![TabletEvent::Added],
+        "precondition: the first add announces the tablet once"
+    );
+
+    tablet_added(&mut f, &device);
+    f.roundtrip(id);
+    assert_eq!(
+        f.client(id).state.tablet_events,
+        vec![TabletEvent::Added],
+        "a repeat add of the same tablet must announce nothing"
+    );
 }
 
 /// Eight pen positions along a diagonal from `start`.

@@ -65,7 +65,7 @@ use wayland_protocols::wp::tablet::zv2::client::{
     zwp_tablet_pad_v2::ZwpTabletPadV2,
     zwp_tablet_seat_v2::{self, ZwpTabletSeatV2},
     zwp_tablet_tool_v2::{self, ZwpTabletToolV2},
-    zwp_tablet_v2::ZwpTabletV2,
+    zwp_tablet_v2::{self, ZwpTabletV2},
 };
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
@@ -157,6 +157,9 @@ pub struct State {
     /// Every `zwp_tablet_tool_v2` event this client has received, oldest
     /// first. Empty until [`Client::get_tablet_seat`] runs.
     pub tablet_tool_events: Vec<TabletToolEvent>,
+    /// Every tablet announced to or withdrawn from this client's tablet seat,
+    /// oldest first. Empty until [`Client::get_tablet_seat`] runs.
+    pub tablet_events: Vec<TabletEvent>,
 
     /// The token string from the most recent `xdg_activation_token_v1.done`.
     pub activation_token: Option<String>,
@@ -333,6 +336,12 @@ pub enum KeyboardEvent {
     Modifiers {
         mods_depressed: u32,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabletEvent {
+    Added,
+    Removed,
 }
 
 /// A `zwp_tablet_tool_v2` event as a tablet-aware client sees it. `Frame` is
@@ -547,6 +556,7 @@ impl Client {
             pointer_axes: Vec::new(),
             keyboard_events: Vec::new(),
             tablet_tool_events: Vec::new(),
+            tablet_events: Vec::new(),
             activation_token: None,
             ext_workspace: ExtWorkspace::default(),
         };
@@ -2583,7 +2593,7 @@ impl Dispatch<ZwpTabletManagerV2, ()> for State {
 
 impl Dispatch<ZwpTabletSeatV2, ()> for State {
     fn event(
-        _state: &mut Self,
+        state: &mut Self,
         _proxy: &ZwpTabletSeatV2,
         event: <ZwpTabletSeatV2 as wayland_client::Proxy>::Event,
         _data: &(),
@@ -2593,7 +2603,9 @@ impl Dispatch<ZwpTabletSeatV2, ()> for State {
         // The new objects need no bookkeeping: what the tool then reports is
         // recorded on the tool itself.
         match event {
-            zwp_tablet_seat_v2::Event::TabletAdded { .. } => (),
+            zwp_tablet_seat_v2::Event::TabletAdded { .. } => {
+                state.tablet_events.push(TabletEvent::Added);
+            }
             zwp_tablet_seat_v2::Event::ToolAdded { .. } => (),
             zwp_tablet_seat_v2::Event::PadAdded { .. } => (),
             _ => unreachable!(),
@@ -2609,15 +2621,18 @@ impl Dispatch<ZwpTabletSeatV2, ()> for State {
 
 impl Dispatch<ZwpTabletV2, ()> for State {
     fn event(
-        _state: &mut Self,
+        state: &mut Self,
         _proxy: &ZwpTabletV2,
-        _event: <ZwpTabletV2 as wayland_client::Proxy>::Event,
+        event: <ZwpTabletV2 as wayland_client::Proxy>::Event,
         _data: &(),
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
-        // The tablet's announce (name, ids, path, done); the scenarios read
-        // the tool, not the tablet it is on.
+        // The announce (name, ids, path, done) goes unrecorded: the scenarios
+        // read the tool, not the tablet it is on.
+        if let zwp_tablet_v2::Event::Removed = event {
+            state.tablet_events.push(TabletEvent::Removed);
+        }
     }
 }
 

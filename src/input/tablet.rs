@@ -65,7 +65,11 @@ impl DriftWm {
         if device.has_capability(DeviceCapability::TabletTool) {
             let tablet_seat = self.seat.tablet_seat();
             let desc = TabletDescriptor::from(device);
-            tablet_seat.add_wp_tablet(&self.display_handle, &desc);
+            // `add_wp_tablet` replaces a known tablet, which clients see as an
+            // unplug and a replug.
+            if tablet_seat.get_tablet(&desc).is_none() {
+                tablet_seat.add_wp_tablet(&self.display_handle, &desc);
+            }
         }
     }
 
