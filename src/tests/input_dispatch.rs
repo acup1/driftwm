@@ -18,12 +18,14 @@ use crate::input::is_interaction_tail;
 use crate::state::StageWindow;
 
 use super::client::ClientId;
+use super::client::TouchEvent;
 use super::input_backend::{
     FakeDevice, button_event, click, key_press, key_release, pointer_to, pointer_to_screen, press,
-    touch_down, touch_up_event,
+    touch_cancel, touch_down, touch_motion, touch_up_event,
 };
 use super::{
-    Fixture, config, keyboard_focus, last_configured, map_window, server_surface, window_by_app_id,
+    Fixture, config, keyboard_focus, last_configured, map_window, server_surface, warnings_during,
+    window_by_app_id,
 };
 
 /// Canvas-space center of `window`'s current geometry.
@@ -174,6 +176,49 @@ fn touch_down_focuses_the_window_under_the_finger() {
         keyboard_focus(&mut f),
         Some(server_surface(&first)),
         "a touch on a window focuses it"
+    );
+}
+
+/// A hardware cancel revokes what the app holds since the last frame, and the
+/// frame libinput sends right behind it has nothing to close. Neither may warn
+/// — smithay's `cancel` and `frame` each do when they have nothing to act on.
+/// The fake has no frame event, so the frame is the handler's own body.
+#[test]
+fn a_hardware_touch_cancel_and_the_frame_behind_it_log_no_warning() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let (first, _second) = two_windows(&mut f, id);
+    let target = center_of(&mut f, &first);
+
+    touch_down(&mut f, target, 0);
+    // Past the holdback: the down is replayed to the app and framed.
+    std::thread::sleep(Duration::from_millis(80));
+    f.pump(5);
+    f.roundtrip(id);
+    assert!(
+        f.client(id).state.touch_events.contains(&TouchEvent::Down),
+        "precondition: the finger reached the window"
+    );
+
+    let warnings = warnings_during(|| {
+        touch_motion(&mut f, target + Point::from((10.0, 10.0)), 0);
+        f.roundtrip(id);
+        touch_cancel(&mut f);
+        f.state().frame_touch_if_owed();
+        f.roundtrip(id);
+    });
+
+    assert!(
+        f.client(id)
+            .state
+            .touch_events
+            .contains(&TouchEvent::Cancel),
+        "the unframed motion is what the cancel revokes"
+    );
+    assert!(
+        !warnings.contains("without prior events"),
+        "the cancel and the frame behind it must each find work to do: {warnings}"
     );
 }
 

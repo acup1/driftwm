@@ -33,7 +33,8 @@ use super::input_backend::{
     touch_motion, touch_up,
 };
 use super::{
-    Fixture, give_ssd, keyboard_focus, map_window, pointer_focus, server_surface, window_by_app_id,
+    Fixture, give_ssd, keyboard_focus, map_window, pointer_focus, server_surface, warnings_during,
+    window_by_app_id,
 };
 
 fn origin_view(f: &mut Fixture) {
@@ -1259,6 +1260,25 @@ fn a_touch_cancel_mid_lock_does_not_strip_a_post_lock_touch_of_its_up() {
         f.client(id).state.touch_events.contains(&TouchEvent::Up),
         "a touch that began after the lock must still receive its up after a \
          hardware TouchCancel mid-lock"
+    );
+}
+
+/// `lock` tears the touch sequence down whether or not a finger is down, and
+/// smithay's `cancel` warns when it has nothing to revoke.
+#[test]
+fn locking_with_no_touch_in_flight_logs_no_warning() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let warnings = warnings_during(|| {
+        f.client(id).lock_session();
+        f.roundtrip(id);
+    });
+
+    assert!(
+        !warnings.contains("without prior events"),
+        "a lock with no touch in flight must not reach smithay's cancel: {warnings}"
     );
 }
 

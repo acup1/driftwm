@@ -483,7 +483,7 @@ impl XdgShellHandler for DriftWm {
                     return;
                 };
                 // Revoke the client's in-flight touch sequence (see the canvas branch below).
-                touch.cancel(self);
+                self.cancel_unframed_touch();
                 self.arm_interactive_move(&window);
                 touch.set_grab(self, grab, serial);
                 return;
@@ -498,9 +498,10 @@ impl XdgShellHandler for DriftWm {
             };
             // The finger's `down` was forwarded to the client (Forward mode), and
             // smithay routes touch motion/up to the slot's stored focus regardless
-            // of the grab — so cancel the client's sequence before the compositor
-            // takes over the drag, or it keeps receiving the whole sequence.
-            touch.cancel(self);
+            // of the grab — so revoke what the client holds before the compositor
+            // takes over the drag. What a frame already settled stays with the
+            // client (`dev/docs/todo.md`).
+            self.cancel_unframed_touch();
             // Moving re-anchors the window, invalidating any fill restore point.
             self.stage.clear_fill(&window);
             self.arm_interactive_move(&window);

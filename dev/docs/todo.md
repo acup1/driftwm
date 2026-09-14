@@ -88,14 +88,15 @@ Everything below is worth doing only if that bump is far off.
 
 ## Touch and tablet
 
-- **`frame_owed` is never cleared on a cancel.** `cancel_touch_sequence` and the
-  two move-request cancels consume smithay's pending frame marker but leave the
-  flag set, so the hardware `TouchFrame` that follows a `TouchCancel` — or the
-  next frame after a move-request cancel — runs `frame_touch_if_owed` into
-  `touch.frame` with no marker and logs a warn. `lock()` calls
-  `cancel_touch_sequence` unconditionally, so that is one warn per lock with no
-  touch in flight. Clear the flag wherever `touch.cancel` is called; gate the
-  lock's cancel on it. A log line, not broken delivery.
+- **A touch drag the compositor takes over never ends the app's touch point.**
+  The xdg move request arrives after the hardware frame that settled the
+  finger's `down`, and smithay's `cancel` skips settled slots, so
+  `cancel_unframed_touch` at the move-request sites has nothing to revoke: the
+  app keeps a live touch point until its slot is reused by a later `down`.
+  Ending it properly means a synthetic `up` (or `cancel`) on that slot alone
+  before the grab installs; smithay has no per-slot cancel, so the `up` is the
+  candidate. Toolkits tolerate the stale point; a canvas app mid-stroke may
+  not.
 - **`add_wp_tablet` destroys and recreates an already-known tablet.** A repeat
   `DeviceAdded` for the same descriptor (session resume, libinput
   re-enumeration) reads to clients as remove + add. The tool path is already

@@ -244,12 +244,10 @@ impl DriftWm {
     /// stops those fingers reaching the window they landed on.
     pub(crate) fn cancel_touch_sequence(&mut self) {
         self.discard_touch_holdback();
+        // Revoke first: the touch grabs self-unset from their own `cancel`, and
+        // the `unset_grab` after it ends the grab when nothing was revoked.
+        self.cancel_unframed_touch();
         if let Some(touch) = self.seat.get_touch() {
-            // Cancel first: all three touch grabs self-unset from their own
-            // `cancel`, so the `unset_grab` after it is belt-and-braces against
-            // one that forgets to. The other order would silently skip every
-            // grab's `cancel` instead.
-            touch.cancel(self);
             touch.unset_grab(self);
         }
         // A pending close installs no grab — it's plain state set at `down` — so
@@ -265,6 +263,18 @@ impl DriftWm {
             && let Some(touch) = self.seat.get_touch()
         {
             touch.frame(self);
+        }
+    }
+
+    /// Revoke the touch events the app has received since the last `frame`.
+    /// smithay's `cancel` reaches exactly those — a settled finger is past
+    /// revoking — and warns when there are none. The revoke closes what it
+    /// covers, so no `frame` is owed after it.
+    pub(crate) fn cancel_unframed_touch(&mut self) {
+        if std::mem::take(&mut self.touch_state.frame_owed)
+            && let Some(touch) = self.seat.get_touch()
+        {
+            touch.cancel(self);
         }
     }
 

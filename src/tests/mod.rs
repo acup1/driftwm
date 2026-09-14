@@ -375,6 +375,38 @@ fn first_popup_surface(root: &WlSurface) -> Option<WlSurface> {
         .map(|(kind, _)| kind.wl_surface().clone())
 }
 
+/// Run `scenario` with every `warn`-or-louder log line captured, and return
+/// them. A spurious warning is a defect in its own right, and some fixes have
+/// no other observable.
+fn warnings_during(scenario: impl FnOnce()) -> String {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let sink = Sink(Arc::new(Mutex::new(Vec::new())));
+    let writer = sink.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, scenario);
+    let captured = sink.0.lock().unwrap();
+    String::from_utf8_lossy(&captured).into_owned()
+}
+
 /// Server-side surface that currently holds keyboard focus, if any.
 fn keyboard_focus(f: &mut Fixture) -> Option<WlSurface> {
     f.state()
