@@ -1,10 +1,10 @@
-//! `zoom-to-fit` is a camera toggle, not a mode: it saves the pre-fit camera
-//! and zoom so a second press returns there, but any deliberate move — a pan
-//! or a navigation — disarms that return and keeps the zoomed-out zoom
-//! instead of restoring the saved one.
+//! `zoom-to-fit` saves the pre-fit zoom and restores it around the selected
+//! window on a second press, falling back to the saved camera without a canvas
+//! selection. A deliberate pan or navigation disarms that return and keeps the
+//! zoomed-out zoom.
 
 use driftwm::config::{Action, Direction};
-use smithay::utils::{Logical, Point};
+use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use crate::state::StageWindow;
 
@@ -95,13 +95,48 @@ fn navigating_disarms_the_fit_toggle() {
 }
 
 #[test]
-fn a_second_press_returns_to_the_pre_fit_viewport() {
+fn a_second_press_centers_the_new_selection_at_the_pre_fit_zoom() {
+    let mut f = Fixture::new();
+    two_spread_windows(&mut f);
+    f.state().set_zoom(0.75);
+    let zoom_before = f.state().zoom();
+    let right = window_by_app_id(&mut f, "right").unwrap();
+    assert!(f.state().focused_window() == Some(right));
+
+    enter_fit_view(&mut f);
+    let left = window_by_app_id(&mut f, "left").unwrap();
+    f.state()
+        .raise_and_focus(&left, SERIAL_COUNTER.next_serial());
+    assert!(f.state().overview_return().is_some());
+    let selected_center = f.state().nav_center(&StageWindow::Client(left.clone()));
+
+    f.state().execute_action(&Action::ZoomToFit);
+    settle(&mut f);
+
+    assert!(f.state().focused_window() == Some(left));
+    assert!(f.state().overview_return().is_none());
+    assert!(
+        (f.state().zoom() - zoom_before).abs() < 1e-6,
+        "leaving overview restores the pre-fit zoom"
+    );
+    let center = f.state().viewport_center_canvas();
+    assert!(
+        (center.x - selected_center.x).abs() < 1e-6 && (center.y - selected_center.y).abs() < 1e-6,
+        "the viewport centers the new selection, got {center:?} want {selected_center:?}"
+    );
+}
+
+#[test]
+fn a_second_press_without_a_selection_returns_to_the_pre_fit_viewport() {
     let mut f = Fixture::new();
     two_spread_windows(&mut f);
     let camera_before = f.state().camera();
     let zoom_before = f.state().zoom();
 
     enter_fit_view(&mut f);
+    f.state()
+        .clear_focus_to_empty_canvas(SERIAL_COUNTER.next_serial());
+    assert!(f.state().focused_element().is_none());
     f.state().execute_action(&Action::ZoomToFit);
     settle(&mut f);
 

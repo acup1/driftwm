@@ -759,28 +759,33 @@ impl DriftWm {
         self.apply_trackpad_send_events();
     }
 
-    /// If an overview-return is pending, animate back to it and return true.
+    /// Restore the pre-overview zoom around the currently focused canvas window.
     fn try_restore_overview(&mut self) -> bool {
         let Some((saved_camera, saved_zoom)) = self.overview_return() else {
             return false;
         };
         self.set_overview_return(None);
         let vc = self.usable_center_screen();
+        let target_camera = self
+            .focused_element()
+            .filter(|w| self.is_canvas_window(w) && self.stage.position_of(w).is_some())
+            .map(|w| canvas::zoom_anchor_camera(self.nav_center(&w), vc, saved_zoom))
+            .unwrap_or(saved_camera);
         self.set_zoom_animation_anchor(
             Point::from((
-                saved_camera.x + vc.x / saved_zoom,
-                saved_camera.y + vc.y / saved_zoom,
+                target_camera.x + vc.x / saved_zoom,
+                target_camera.y + vc.y / saved_zoom,
             )),
             vc,
         );
-        self.set_camera_target(Some(saved_camera));
+        self.set_camera_target(Some(target_camera));
         self.set_zoom_target(Some(saved_zoom));
         true
     }
 
     /// Animate zoom + camera to fit `bbox` inside the viewport. Saves the
     /// current camera/zoom into `overview_return` so the next zoom-to-fit
-    /// press toggles back.
+    /// press restores the zoom around the selected window, or the saved view.
     fn fit_to_bbox(&mut self, bbox: smithay::utils::Rectangle<i32, smithay::utils::Logical>) {
         let usable = self.get_usable_area();
         let vc = self.usable_center_screen();
