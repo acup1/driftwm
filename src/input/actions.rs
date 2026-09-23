@@ -296,6 +296,10 @@ impl DriftWm {
                 }
             }
             Action::HomeToggle => {
+                // Pinch-out uses home-toggle: leave overview before navigating home.
+                if self.try_restore_overview() {
+                    return;
+                }
                 let viewport_size = self.get_viewport_size();
                 let zoom = self.zoom();
                 let camera = self.camera();
